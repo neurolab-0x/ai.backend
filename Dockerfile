@@ -39,7 +39,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    TF_CPP_MIN_LOG_LEVEL=2
+    TF_CPP_MIN_LOG_LEVEL=3
 
 # Copy application code
 COPY . .
