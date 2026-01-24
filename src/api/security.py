@@ -11,11 +11,22 @@ logger = logging.getLogger(__name__)
 
 # Create JWT authentication handler
 jwt_auth = JWTAuth(token_expiry=SECURITY_CONFIG['token_expiry_hours'])
-security = HTTPBearer()
+
+# Create security scheme that's optional when authentication is disabled
+class OptionalHTTPBearer(HTTPBearer):
+    def __init__(self, auto_error: bool = True):
+        super().__init__(auto_error=auto_error)
+
+    async def __call__(self, request):
+        if not SECURITY_CONFIG['require_authentication']:
+            return None
+        return await super().__call__(request)
+
+security = OptionalHTTPBearer(auto_error=False)
 
 # ========== AUTHENTICATION DEPENDENCIES ==========
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     """
     Dependency to get current authenticated user from token
     
@@ -24,8 +35,15 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     dict: User information from token payload
     """
     if not SECURITY_CONFIG['require_authentication']:
-        # If authentication is disabled, return a default user
-        return {"sub": "anonymous", "roles": ["user"]}
+        # If authentication is disabled, return a default anonymous user
+        return {"sub": "anonymous", "roles": ["user", "admin"]}
+    
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     try:
         token = credentials.credentials
@@ -59,7 +77,8 @@ async def require_role(role: str, user: Dict = Depends(get_current_user)):
     dict: User information if authorized
     """
     if not SECURITY_CONFIG['require_authentication']:
-        return user
+        # If authentication is disabled, return user with all roles
+        return {"sub": "anonymous", "roles": ["user", "admin"]}
     
     roles = user.get("roles", [])
     

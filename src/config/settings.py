@@ -1,3 +1,5 @@
+import os
+
 PROCESSING_CONFIG = {
     'sample_rate': 0.5,
     'smoothing_window': 5,
@@ -25,13 +27,25 @@ REAL_TIME_CONFIG = {
 }
 
 SECURITY_CONFIG = {
+    # ============================================
+    # AUTHENTICATION CONTROL
+    # ============================================
+    # Authentication is DISABLED by default for development
+    # 
+    # To ENABLE authentication:
+    # 1. Set REQUIRE_AUTH=true environment variable, OR
+    # 2. Change the default value below to True
+    # 
+    # For production: Always set REQUIRE_AUTH=true
+    # ============================================
+    
     # Encryption settings
     'enable_encryption': True,              # Enable data encryption
     'encryption_for_storage': True,         # Encrypt data before storing
     'encryption_for_transit': True,         # Always encrypt responses
     
     # Authentication settings
-    'require_authentication': True,         # Require authentication for API access
+    'require_authentication': os.getenv('REQUIRE_AUTH', 'false').lower() == 'true',  # Can be overridden with REQUIRE_AUTH env var
     'token_expiry_hours': 24,               # JWT token expiry time in hours
     'refresh_token_expiry_days': 30,        # Refresh token expiry in days
     

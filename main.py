@@ -13,6 +13,7 @@ import pandas as pd
 from src.utils.file_handler import validate_file, save_uploaded_file
 from src.utils.model_manager import ModelManager
 from src.utils.ml_processor import MLProcessor
+from src.config.settings import SECURITY_CONFIG
 
 # Import API routers
 from src.api.training import router as training_router
@@ -73,12 +74,30 @@ app.include_router(voice_router, tags=["Voice Analysis"])
 if STREAMING_AVAILABLE:
     app.include_router(streaming_router, tags=["Streaming"])
 
+@app.get("/auth-status")
+async def auth_status():
+    """Check authentication status"""
+    return {
+        "authentication_enabled": SECURITY_CONFIG['require_authentication'],
+        "status": "enabled" if SECURITY_CONFIG['require_authentication'] else "disabled",
+        "message": "Authentication is currently " + ("enabled" if SECURITY_CONFIG['require_authentication'] else "disabled"),
+        "toggle_instructions": {
+            "script": "python toggle_auth.py on/off",
+            "environment": "export REQUIRE_AUTH=true/false",
+            "settings_file": "Edit src/config/settings.py"
+        }
+    }
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
         return {
             "status": model_manager.get_health_status(),
+            "authentication": {
+                "enabled": SECURITY_CONFIG['require_authentication'],
+                "status": "enabled" if SECURITY_CONFIG['require_authentication'] else "disabled"
+            },
             "diagnostics": {
                 "model_loaded": model_manager.model is not None,
                 "tensorflow_available": model_manager.tensorflow_available
@@ -101,8 +120,13 @@ async def root():
         "name": "NeuroLab EEG Analysis API",
         "version": "1.0.0",
         "description": "API for EEG signal processing and mental state classification with NLP-based recommendations",
+        "authentication": {
+            "enabled": SECURITY_CONFIG['require_authentication'],
+            "status": "Authentication is " + ("ENABLED" if SECURITY_CONFIG['require_authentication'] else "DISABLED")
+        },
         "endpoints": {
             "health": "/health",
+            "auth_status": "/auth-status",
             "upload": "/upload",
             "analyze": "/analyze",
             "detailed_report": "/detailed-report",
