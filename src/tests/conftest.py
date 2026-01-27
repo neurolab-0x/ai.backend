@@ -11,7 +11,11 @@ import pandas as pd
 from datetime import datetime
 
 # Add parent directory to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add parent directory to path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+project_root = os.path.dirname(src_dir)
+sys.path.insert(0, project_root)
 
 @pytest.fixture(scope="session")
 def test_data_dir():
