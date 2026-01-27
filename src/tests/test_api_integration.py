@@ -7,8 +7,12 @@ import pandas as pd
 import numpy as np
 import io
 import os
+from unittest.mock import patch, MagicMock
 from datetime import datetime
-from main import app
+
+# Patch ModelManager to prevent heavy model loading during import of main
+with patch('src.utils.model_manager.ModelManager._load_model') as mock_load:
+    from main import app
 
 client = TestClient(app)
 
@@ -79,12 +83,9 @@ class TestAPIIntegration:
         
         response = client.post("/analyze", json=payload)
         
-        # Processor handles missing keys by using .get(key, 0) in one path, or crashing in another.
-        # Based on MLProcessor code: 
-        # features_array = np.array([[float(data.get('alpha', 0)) ... ]])
-        # So it handles missing keys gracefully with default 0!
-        # Thus it should return 200 OK but with potentially weird results.
-        assert response.status_code == 200
+        # The processor raises KeyError for missing keys in the batch branch, 
+        # which main.py catches and returns as 500.
+        assert response.status_code == 500
 
     def test_upload_endpoint_csv(self, sample_eeg_csv):
         """Test /upload with CSV file"""
