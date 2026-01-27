@@ -33,6 +33,7 @@ tensorflow==2.15.1
 # protobuf==4.25.3  # Let tensorflow resolve its own protobuf dependency
 joblib==1.3.0
 imbalanced-learn==0.12.3
+transformers>=4.30.0
 
 # ============================================
 # Visualization
