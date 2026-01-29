@@ -26,7 +26,7 @@ def process_uploaded_file(uploaded_file: UploadFile):
     print(features_df)
 
     # Preprocess data
-    X, _, _, _ = preprocess_data(features_df)
+    X, _, _, _, metadata = preprocess_data(features_df)
 
     # Load trained model
     model_path = "./data/processed/trained_model.h5"

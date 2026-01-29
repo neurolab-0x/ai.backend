@@ -494,6 +494,14 @@ def extract_features_from_single_epoch(df: pd.DataFrame, eeg_channels: List[str]
             for band_name, powers in all_band_powers.items():
                 feature_data[band_name] = np.mean(powers) if powers else 0
             
+            # Preserve target column if present
+            if 'eeg_state' in df.columns:
+                feature_data['eeg_state'] = df['eeg_state'].iloc[0]
+            elif 'state' in df.columns:
+                feature_data['eeg_state'] = df['state'].iloc[0]
+            elif 'label' in df.columns:
+                feature_data['eeg_state'] = df['label'].iloc[0]
+            
             return feature_data
         
         # Complex mode: Extract comprehensive features per channel
@@ -566,6 +574,14 @@ def extract_features_from_single_epoch(df: pd.DataFrame, eeg_channels: List[str]
             except Exception as e:
                 logger.warning(f"Could not compute PCA features: {str(e)}")
         
+        # Preserve target column if present
+        if 'eeg_state' in df.columns:
+            feature_data['eeg_state'] = df['eeg_state'].iloc[0]
+        elif 'state' in df.columns:
+            feature_data['eeg_state'] = df['state'].iloc[0]
+        elif 'label' in df.columns:
+            feature_data['eeg_state'] = df['label'].iloc[0]
+            
         # Return as dictionary
         return feature_data
         
