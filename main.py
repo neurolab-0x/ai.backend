@@ -29,7 +29,7 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger("NeuroLab Axon Prime API - Cloud Server")
+logger = logging.getLogger("NeuroLab Axon Prime API")
 
 try:
     from src.api.streaming import router as streaming_router

@@ -21,3 +21,4 @@ notebooks
 processed
 *.h5
 *.keras
+.idea
