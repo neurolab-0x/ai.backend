@@ -29,10 +29,10 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger("NeuroLabAPI")
+logger = logging.getLogger("NeuroLab Axon Prime API - Cloud Server")
 
 try:
-    from src.api.real_time import router as streaming_router
+    from src.api.streaming import router as streaming_router
     STREAMING_AVAILABLE = True
 except ImportError:
     STREAMING_AVAILABLE = False
@@ -51,9 +51,9 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutdown initiated")
 
 app = FastAPI(
-    title="NeuroLab EEG Analysis API",
+    title="NeuroLab Axon Prime - Cloud Server",
     description="API for EEG signal processing and mental state classification",
-    version="1.0.0",
+    version="2.0.1",
     lifespan=lifespan
 )
 
@@ -71,20 +71,6 @@ app.include_router(training_router, tags=["Training"])
 app.include_router(voice_router, tags=["Voice Analysis"])
 if STREAMING_AVAILABLE:
     app.include_router(streaming_router, tags=["Streaming"])
-
-@app.get("/auth-status")
-async def auth_status():
-    """Check authentication status"""
-    return {
-        "authentication_enabled": SECURITY_CONFIG['require_authentication'],
-        "status": "enabled" if SECURITY_CONFIG['require_authentication'] else "disabled",
-        "message": "Authentication is currently " + ("enabled" if SECURITY_CONFIG['require_authentication'] else "disabled"),
-        "toggle_instructions": {
-            "script": "python toggle_auth.py on/off",
-            "environment": "export REQUIRE_AUTH=true/false",
-            "settings_file": "Edit src/config/settings.py"
-        }
-    }
 
 @app.get("/health")
 async def health_check():
@@ -115,24 +101,9 @@ async def health_check():
 async def root():
     """API root with basic information"""
     return {
-        "name": "NeuroLab EEG Analysis API",
-        "version": "1.0.0",
+        "name": "NeuroLab Axon Prime - Cloud Server",
+        "version": "2.0.1",
         "description": "API for EEG signal processing and mental state classification with NLP-based recommendations",
-        "authentication": {
-            "enabled": SECURITY_CONFIG['require_authentication'],
-            "status": "Authentication is " + ("ENABLED" if SECURITY_CONFIG['require_authentication'] else "DISABLED")
-        },
-        "endpoints": {
-            "health": "/health",
-            "auth_status": "/auth-status",
-            "upload": "/upload",
-            "analyze": "/analyze",
-            "detailed_report": "/detailed-report",
-            "recommendations": "/recommendations",
-            "calibrate": "/calibrate",
-            "voice_analyze": "/voice/analyze",
-            "voice_health": "/voice/health"
-        },
         "features": [
             "Real-time EEG analysis",
             "Mental state classification (relaxed, focused, stressed)",
