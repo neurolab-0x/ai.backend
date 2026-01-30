@@ -17,7 +17,6 @@ from src.config.settings import SECURITY_CONFIG
 
 # Import API routers
 from src.api.training import router as training_router
-from src.api.auth import router as auth_router
 from src.api.voice import router as voice_router
 
 # Configure logging
@@ -69,7 +68,6 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(training_router, tags=["Training"])
-app.include_router(auth_router, tags=["Authentication"])
 app.include_router(voice_router, tags=["Voice Analysis"])
 if STREAMING_AVAILABLE:
     app.include_router(streaming_router, tags=["Streaming"])
