@@ -166,9 +166,11 @@ def split_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         y = df[target_column]
         
         if stratify:
-            return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
         else:
-            return train_test_split(X, y, test_size=test_size, random_state=random_state)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+            
+        return np.array(X_train), np.array(X_test), np.array(y_train), np.array(y_test)
     except Exception as e:
         raise PreprocessingError(f"Error in data splitting: {str(e)}")
 
@@ -190,9 +192,13 @@ def augment_data(X: np.ndarray, y: np.ndarray, noise_level: float = 0.05,
         if shift != 0:
             x_shift = np.roll(x, shift)
             if shift > 0:
-                x_shift[:shift] = x_shift[shift]
+                # Clamp shift if it exceeds array length
+                s = min(shift, len(x) - 1)
+                x_shift[:s] = x_shift[s]
             else:
-                x_shift[shift:] = x_shift[shift-1]
+                # Clamp shift if it exceeds array length
+                s = max(shift, -len(x) + 1)
+                x_shift[s:] = x_shift[s-1]
         else:
             x_shift = x
         
@@ -208,7 +214,7 @@ def augment_data(X: np.ndarray, y: np.ndarray, noise_level: float = 0.05,
         ))
     
     augmented_X = np.vstack([X] + [r[0] for r in results])
-    augmented_y = np.concatenate([y] + [r[1] for r in results])
+    augmented_y = np.concatenate([y] + [np.atleast_1d(r[1]) for r in results])
     
     return augmented_X, augmented_y
 
@@ -367,8 +373,8 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
             # For inference, return X as first element, rest as None
             return X_normalized, None, None, None, metadata
         
-        # Training mode: Split data
         X_train, X_test, y_train, y_test = split_data(df_features, target_column)
+        
         logger.info(f"Training set: {X_train.shape}, Test set: {X_test.shape}")
         metadata['preprocessing_steps'].append('data_splitting')
         
