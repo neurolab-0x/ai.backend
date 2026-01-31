@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 
 from src.models.model import train_hybrid_model, evaluate_model, model_comparison
-from src.api.security import require_admin_role, get_current_user
 from src.utils.file_handler import validate_file, save_uploaded_file
 from src.preprocessing.load_data import load_data
 from src.preprocessing.labeling import label_eeg_states
@@ -291,7 +290,7 @@ async def train_model_from_file(
 @router.get("/api/train/status/{job_id}", response_model=TrainingStatus)
 async def get_training_status(
     job_id: str,
-    current_user: Dict = Depends(get_current_user)
+    # current_user: Dict = Depends(get_current_user)
 ):
     """
     Get the status of a training job.
@@ -304,19 +303,12 @@ async def get_training_status(
     
     job = training_jobs[job_id]
     
-    # Check if user has permission to view this job
-    if current_user['sub'] != job['user'] and 'admin' not in current_user.get('roles', []):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to view this training job"
-        )
-    
     return TrainingStatus(**job)
 
 
 @router.get("/api/train/jobs", response_model=List[TrainingStatus])
 async def list_training_jobs(
-    current_user: Dict = Depends(get_current_user),
+    # current_user: Dict = Depends(get_current_user),
     limit: int = 10
 ):
     """
@@ -339,7 +331,7 @@ async def list_training_jobs(
 @router.delete("/api/train/job/{job_id}")
 async def delete_training_job(
     job_id: str,
-    current_user: Dict = Depends(require_admin_role)
+    # current_user: Dict = Depends(require_admin_role)
 ):
     """
     Delete a training job record (Admin only).
@@ -361,7 +353,7 @@ async def compare_models(
     data: TrainingData,
     background_tasks: BackgroundTasks,
     n_repeats: int = 3,
-    current_user: Dict = Depends(require_admin_role)
+    # current_user: Dict = Depends(require_admin_role)
 ):
     """
     Compare multiple model architectures (Admin only).
