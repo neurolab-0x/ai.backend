@@ -3,15 +3,17 @@ ML package for the NeuroLab AI Model Server.
 Contains machine learning models and processing components.
 """
 
-from .processing import (
+from src.preprocessing import (
     load_data,
     label_eeg_states,
     extract_features,
-    preprocess_data,
-    temporal_smoothing,
-    calculate_state_durations,
-    generate_recommendations
+    preprocess_data
 )
+from src.utils.temporal_processing import (
+    temporal_smoothing,
+    calculate_state_durations
+)
+from src.utils.nlp_recommendations import get_recommendations as generate_recommendations
 from .model import (
     create_model,
     load_calibrated_model,
