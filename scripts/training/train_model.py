@@ -37,6 +37,7 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.features import extract_features
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.labeling import label_eeg_states
+from src.models.model import build_model
 
 # Configure logging
 logging.basicConfig(
@@ -89,7 +90,7 @@ class ImprovedModelTrainer:
         architecture: str = "lstm_attention"
     ) -> keras.Model:
         """
-        Build advanced model architecture
+        Build advanced model architecture using core implementation
         
         Args:
             input_shape: Shape of input data (timesteps, features)
@@ -99,125 +100,25 @@ class ImprovedModelTrainer:
         Returns:
             Compiled Keras model
         """
-        if architecture == "lstm_attention":
-            model = self._build_lstm_attention_model(input_shape, num_classes)
-        elif architecture == "bidirectional_lstm":
-            model = self._build_bidirectional_lstm_model(input_shape, num_classes)
-        elif architecture == "cnn_lstm":
-            model = self._build_cnn_lstm_model(input_shape, num_classes)
-        else:
-            model = self._build_lstm_attention_model(input_shape, num_classes)
+        # Map training script architecture names to core model names if necessary
+        # scripts: lstm_attention, bidirectional_lstm, cnn_lstm
+        # models: original, enhanced_cnn_lstm, resnet_lstm, transformer
         
-        logger.info(f"Built {architecture} model with input shape {input_shape}")
-        return model
-    
-    def _build_lstm_attention_model(
-        self,
-        input_shape: Tuple[int, int],
-        num_classes: int
-    ) -> keras.Model:
-        """Build LSTM model with attention mechanism"""
-        inputs = layers.Input(shape=input_shape)
+        mapping = {
+            "lstm_attention": "enhanced_cnn_lstm",
+            "bidirectional_lstm": "resnet_lstm",
+            "cnn_lstm": "original"
+        }
         
-        # LSTM layers
-        x = layers.LSTM(128, return_sequences=True)(inputs)
-        x = layers.Dropout(0.3)(x)
-        x = layers.LSTM(64, return_sequences=True)(x)
-        x = layers.Dropout(0.3)(x)
+        model_type = mapping.get(architecture, architecture)
         
-        # Attention mechanism
-        attention = layers.Dense(1, activation='tanh')(x)
-        attention = layers.Flatten()(attention)
-        attention = layers.Activation('softmax')(attention)
-        attention = layers.RepeatVector(64)(attention)
-        attention = layers.Permute([2, 1])(attention)
-        
-        # Apply attention
-        x = layers.Multiply()([x, attention])
-        x = layers.Lambda(lambda xin: tf.reduce_sum(xin, axis=1))(x)
-        
-        # Dense layers
-        x = layers.Dense(64, activation='relu')(x)
-        x = layers.Dropout(0.4)(x)
-        x = layers.Dense(32, activation='relu')(x)
-        x = layers.Dropout(0.3)(x)
-        
-        outputs = layers.Dense(num_classes, activation='softmax')(x)
-        
-        model = keras.Model(inputs=inputs, outputs=outputs, name='lstm_attention')
-        
-        # Compile with advanced optimizer
-        optimizer = optimizers.Adam(learning_rate=0.001)
-        model.compile(
-            optimizer=optimizer,
-            loss='categorical_crossentropy',
-            metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
+        model = build_model(
+            model_type=model_type,
+            input_shape=input_shape,
+            num_classes=num_classes
         )
         
-        return model
-    
-    def _build_bidirectional_lstm_model(
-        self,
-        input_shape: Tuple[int, int],
-        num_classes: int
-    ) -> keras.Model:
-        """Build Bidirectional LSTM model"""
-        model = keras.Sequential([
-            layers.Input(shape=input_shape),
-            layers.Bidirectional(layers.LSTM(128, return_sequences=True)),
-            layers.Dropout(0.3),
-            layers.Bidirectional(layers.LSTM(64)),
-            layers.Dropout(0.3),
-            layers.Dense(64, activation='relu'),
-            layers.Dropout(0.4),
-            layers.Dense(32, activation='relu'),
-            layers.Dropout(0.3),
-            layers.Dense(num_classes, activation='softmax')
-        ], name='bidirectional_lstm')
-        
-        optimizer = optimizers.Adam(learning_rate=0.001)
-        model.compile(
-            optimizer=optimizer,
-            loss='categorical_crossentropy',
-            metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
-        )
-        
-        return model
-    
-    def _build_cnn_lstm_model(
-        self,
-        input_shape: Tuple[int, int],
-        num_classes: int
-    ) -> keras.Model:
-        """Build CNN-LSTM hybrid model"""
-        inputs = layers.Input(shape=input_shape)
-        
-        # CNN layers for feature extraction
-        x = layers.Conv1D(64, 3, activation='relu', padding='same')(inputs)
-        x = layers.MaxPooling1D(2)(x)
-        x = layers.Conv1D(128, 3, activation='relu', padding='same')(x)
-        x = layers.MaxPooling1D(2)(x)
-        
-        # LSTM layers for temporal modeling
-        x = layers.LSTM(64, return_sequences=True)(x)
-        x = layers.Dropout(0.3)(x)
-        x = layers.LSTM(32)(x)
-        x = layers.Dropout(0.3)(x)
-        
-        # Dense layers
-        x = layers.Dense(64, activation='relu')(x)
-        x = layers.Dropout(0.4)(x)
-        outputs = layers.Dense(num_classes, activation='softmax')(x)
-        
-        model = keras.Model(inputs=inputs, outputs=outputs, name='cnn_lstm')
-        
-        optimizer = optimizers.Adam(learning_rate=0.001)
-        model.compile(
-            optimizer=optimizer,
-            loss='categorical_crossentropy',
-            metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
-        )
-        
+        logger.info(f"Built {model_type} model from core implementation with input shape {input_shape}")
         return model
     
     def create_callbacks(self, patience: int = 15) -> List[callbacks.Callback]:

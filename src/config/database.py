@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Global database toggle
+ENABLE_DATABASES = os.getenv('ENABLE_DATABASES', 'false').lower() == 'true'
+
 # InfluxDB Configuration
 INFLUXDB_CONFIG = {
     'url': os.getenv('INFLUXDB_URL', 'http://localhost:8086'),
