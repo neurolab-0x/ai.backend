@@ -22,7 +22,6 @@ import time
 import os
 import logging
 from datetime import datetime
-from src.utils.influxdb_client import InfluxDBManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -238,36 +237,32 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         Training history
     """
     
-    # Extract parameters with defaults
+def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=3, **kwargs):
+    """
+    Build model architecture without training.
+    
+    Parameters:
+    -----------
+    model_type : str
+        Type of model to build
+    input_shape : tuple
+        Shape of input data
+    num_classes : int
+        Number of output classes
+    kwargs : dict
+        Additional parameters
+        
+    Returns:
+    --------
+    model : Keras model
+        Compiled Keras model
+    """
     dropout_rate = kwargs.get('dropout_rate', 0.3)
-    learning_rate = kwargs.get('learning_rate', 0.001)
-    batch_size = kwargs.get('batch_size', 32)
-    epochs = kwargs.get('epochs', 30)
     use_separable = kwargs.get('use_separable', True)
     use_relative_pos = kwargs.get('use_relative_pos', True)
     l1_reg = kwargs.get('l1_reg', 1e-5)
     l2_reg = kwargs.get('l2_reg', 1e-4)
-    
-    # InfluxDB configuration
-    influxdb_config = kwargs.get('influxdb_config')
-    subject_id = kwargs.get('subject_id', 'default_subject')
-    session_id = kwargs.get('session_id', f'session_{int(time.time())}')
-    
-    # Initialize InfluxDB manager if config is provided
-    influxdb_manager = None
-    if influxdb_config:
-        influxdb_manager = InfluxDBManager(
-            url=influxdb_config['url'],
-            token=influxdb_config['token'],
-            org=influxdb_config['org'],
-            bucket=influxdb_config['bucket']
-        )
-    
-    # Reshape input for CNN
-    X_train = X_train.reshape(-1, X_train.shape[1], 1)
-    input_shape = (X_train.shape[1], 1)
-    num_classes = len(set(y_train))
-    
+
     # Model input with noise for regularization
     inputs = Input(shape=input_shape)
     x = GaussianNoise(0.01)(inputs)
@@ -356,7 +351,7 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
-    # Output layer with label smoothing
+    # Output layer
     outputs = Dense(num_classes, activation='softmax')(x)
     
     # Create and compile model
@@ -367,6 +362,47 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         optimizer='adam',
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
+    )
+    
+    return model
+
+def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwargs):
+    """
+    Enhanced hybrid model training with improved architectures and training features.
+    Supports 8, 16, 32, and 64 channel configurations.
+    
+    Parameters:
+    -----------
+    X_train : array
+        Training data
+    y_train : array
+        Training labels
+    model_type : str
+        Type of model to use
+    kwargs : dict
+        Additional parameters
+    
+    Returns:
+    --------
+    model : Keras model
+        Trained model
+    history : History object
+        Training history
+    """
+    batch_size = kwargs.get('batch_size', 32)
+    epochs = kwargs.get('epochs', 30)
+    
+    # Reshape input for CNN
+    X_train = X_train.reshape(-1, X_train.shape[1], 1)
+    input_shape = (X_train.shape[1], 1)
+    num_classes = len(set(y_train))
+    
+    # Build model using standardized function
+    model = build_model(
+        model_type=model_type,
+        input_shape=input_shape,
+        num_classes=num_classes,
+        **kwargs
     )
     
     # Calculate class weights for imbalanced data
@@ -392,34 +428,8 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         histogram_freq=1
     )
     
-    # Custom callback for logging metrics to InfluxDB
-    class InfluxDBLogger(tf.keras.callbacks.Callback):
-        def __init__(self, influxdb_manager, subject_id, session_id, model_type):
-            super().__init__()
-            self.influxdb_manager = influxdb_manager
-            self.subject_id = subject_id
-            self.session_id = session_id
-            self.model_type = model_type
-        
-        def on_epoch_end(self, epoch, logs=None):
-            if self.influxdb_manager and logs:
-                metrics = {
-                    'loss': float(logs['loss']),
-                    'accuracy': float(logs['accuracy']),
-                    'val_loss': float(logs['val_loss']),
-                    'val_accuracy': float(logs['val_accuracy'])
-                }
-                self.influxdb_manager.write_personalized_metrics(
-                    metrics=metrics,
-                    timestamp=datetime.now(),
-                    subject_id=self.subject_id,
-                    session_id=self.session_id
-                )
-    
-    # Add InfluxDB logger to callbacks if configured
+    # Enhanced callbacks
     callbacks = [lr_scheduler, early_stopping, model_checkpoint, tensorboard]
-    if influxdb_manager:
-        callbacks.append(InfluxDBLogger(influxdb_manager, subject_id, session_id, model_type))
     
     # Train model with enhanced callbacks
     history = model.fit(
@@ -436,10 +446,6 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     print(f"Model training complete. Type: {model_type}")
     model_path = f"./processed/trained_model_{model_type}.h5"
     save_trained_model(model, model_path)
-    
-    # Close InfluxDB connection if it was opened
-    if influxdb_manager:
-        influxdb_manager.close()
     
     return model, history
 
@@ -469,22 +475,6 @@ def evaluate_model(model, X_test, y_test, calibrate=True, **kwargs):
     metrics : dict
         Evaluation metrics
     """
-    # Extract InfluxDB parameters
-    influxdb_config = kwargs.get('influxdb_config')
-    subject_id = kwargs.get('subject_id', 'default_subject')
-    session_id = kwargs.get('session_id', f'eval_{int(time.time())}')
-    model_type = kwargs.get('model_type', 'unknown')
-    
-    # Initialize InfluxDB manager if config is provided
-    influxdb_manager = None
-    if influxdb_config:
-        influxdb_manager = InfluxDBManager(
-            url=influxdb_config['url'],
-            token=influxdb_config['token'],
-            org=influxdb_config['org'],
-            bucket=influxdb_config['bucket']
-        )
-    
     X_test = X_test.reshape(-1, X_test.shape[1], 1)
     
     # Get predictions with temperature scaling
@@ -504,17 +494,8 @@ def evaluate_model(model, X_test, y_test, calibrate=True, **kwargs):
         print(f"Could not calculate ROC AUC: {e}")
         auc = None
     
-    # Log predictions to InfluxDB if configured
-    if influxdb_manager:
-        for i in range(len(X_test)):
-            influxdb_manager.write_model_predictions(
-                predictions=y_pred[i:i+1],
-                probabilities=y_pred_proba[i:i+1],
-                timestamp=datetime.now(),
-                subject_id=subject_id,
-                session_id=session_id,
-                model_type=model_type
-            )
+    # Predictions
+    y_pred_proba = model.predict(X_test)
     
     # Apply confidence calibration if requested
     calibration_metrics = {}
@@ -591,15 +572,6 @@ def evaluate_model(model, X_test, y_test, calibrate=True, **kwargs):
                                     if before_ece > 0 else 0.0
             }
             
-            # Log calibration metrics to InfluxDB if configured
-            if influxdb_manager:
-                influxdb_manager.write_personalized_metrics(
-                    metrics=calibration_metrics,
-                    timestamp=datetime.now(),
-                    subject_id=subject_id,
-                    session_id=session_id
-                )
-            
             print(f"\nConfidence calibration:")
             print(f"  - Temperature: {temperature:.4f}")
             print(f"  - ECE before: {before_ece:.4f}")
@@ -630,10 +602,6 @@ def evaluate_model(model, X_test, y_test, calibrate=True, **kwargs):
     if calibration_metrics:
         metrics['calibration'] = calibration_metrics
     
-    # Close InfluxDB connection if it was opened
-    if influxdb_manager:
-        influxdb_manager.close()
-    
     return metrics
 
 def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3, **kwargs):
@@ -658,20 +626,6 @@ def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3, **kwargs):
     results : dict
         Performance metrics for each model type
     """
-    # Extract InfluxDB parameters
-    influxdb_config = kwargs.get('influxdb_config')
-    subject_id = kwargs.get('subject_id', 'default_subject')
-    
-    # Initialize InfluxDB manager if config is provided
-    influxdb_manager = None
-    if influxdb_config:
-        influxdb_manager = InfluxDBManager(
-            url=influxdb_config['url'],
-            token=influxdb_config['token'],
-            org=influxdb_config['org'],
-            bucket=influxdb_config['bucket']
-        )
-    
     model_types = ['original', 'enhanced_cnn_lstm', 'resnet_lstm', 'transformer']
     results = {model_type: {
         'accuracy': [], 
@@ -694,10 +648,7 @@ def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3, **kwargs):
             start_time = time.time()
             model, _ = train_hybrid_model(
                 X_train, y_train, 
-                model_type=model_type,
-                influxdb_config=influxdb_config,
-                subject_id=subject_id,
-                session_id=session_id
+                model_type=model_type
             )
             training_time = time.time() - start_time
             
@@ -713,11 +664,7 @@ def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3, **kwargs):
             
             # Evaluate model
             metrics = evaluate_model(
-                model, X_test, y_test,
-                influxdb_config=influxdb_config,
-                subject_id=subject_id,
-                session_id=session_id,
-                model_type=model_type
+                model, X_test, y_test
             )
             
             # Store results
@@ -745,9 +692,5 @@ def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3, **kwargs):
             avg_auc = np.mean(results[model_type]['auc'])
             std_auc = np.std(results[model_type]['auc'])
             print(f"Average AUC: {avg_auc:.4f} ± {std_auc:.4f}")
-    
-    # Close InfluxDB connection if it was opened
-    if influxdb_manager:
-        influxdb_manager.close()
     
     return results
