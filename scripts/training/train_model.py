@@ -249,10 +249,6 @@ class ImprovedModelTrainer:
             X_train_fold, X_val_fold = X[train_idx], X[val_idx]
             y_train_fold, y_val_fold = y[train_idx], y[val_idx]
             
-            # Convert labels to categorical
-            y_train_cat = to_categorical(y_train_fold, num_classes=3)
-            y_val_cat = to_categorical(y_val_fold, num_classes=3)
-            
             # Build model
             model = self.build_advanced_model(
                 input_shape=(X_train_fold.shape[1], X_train_fold.shape[2]),
@@ -262,8 +258,8 @@ class ImprovedModelTrainer:
             
             # Train
             history = model.fit(
-                X_train_fold, y_train_cat,
-                validation_data=(X_val_fold, y_val_cat),
+                X_train_fold, y_train_fold,
+                validation_data=(X_val_fold, y_val_fold),
                 epochs=epochs,
                 batch_size=batch_size,
                 callbacks=self.create_callbacks(patience=10),
@@ -271,9 +267,19 @@ class ImprovedModelTrainer:
             )
             
             # Evaluate
-            val_loss, val_acc, val_precision, val_recall = model.evaluate(
-                X_val_fold, y_val_cat, verbose=0
+            eval_metrics = model.evaluate(
+                X_val_fold, y_val_fold, verbose=0
             )
+            # Depending on how the model was compiled, metrics index might change
+            # Default is [loss, accuracy]
+            val_loss = eval_metrics[0]
+            val_acc = eval_metrics[1]
+            
+            # Calculate precision/recall from predictions for more detail
+            y_val_pred = np.argmax(model.predict(X_val_fold, verbose=0), axis=1)
+            from sklearn.metrics import precision_score, recall_score
+            val_precision = precision_score(y_val_fold, y_val_pred, average='macro', zero_division=0)
+            val_recall = recall_score(y_val_fold, y_val_pred, average='macro', zero_division=0)
             
             cv_scores.append({
                 'fold': fold,
@@ -338,10 +344,6 @@ class ImprovedModelTrainer:
         if use_augmentation:
             X_train, y_train = self.augment_data(X_train, y_train, augmentation_factor=1)
         
-        # Convert labels to categorical
-        y_train_cat = to_categorical(y_train, num_classes=3)
-        y_val_cat = to_categorical(y_val, num_classes=3)
-        
         # Build model
         self.model = self.build_advanced_model(
             input_shape=(X_train.shape[1], X_train.shape[2]),
@@ -354,8 +356,8 @@ class ImprovedModelTrainer:
         
         # Train
         self.history = self.model.fit(
-            X_train, y_train_cat,
-            validation_data=(X_val, y_val_cat),
+            X_train, y_train,
+            validation_data=(X_val, y_val),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=self.create_callbacks(),
@@ -397,17 +399,21 @@ class ImprovedModelTrainer:
         """
         logger.info("Evaluating model")
         
-        # Convert labels
-        y_test_cat = to_categorical(y_test, num_classes=3)
-        
         # Predictions
         y_pred_proba = self.model.predict(X_test)
         y_pred = np.argmax(y_pred_proba, axis=1)
         
         # Calculate metrics
-        test_loss, test_acc, test_precision, test_recall = self.model.evaluate(
-            X_test, y_test_cat, verbose=0
+        eval_metrics = self.model.evaluate(
+            X_test, y_test, verbose=0
         )
+        test_loss = eval_metrics[0]
+        test_acc = eval_metrics[1]
+        
+        # Calculate precision/recall manualy as basic evaluate only returns accuracy
+        from sklearn.metrics import precision_score, recall_score
+        test_precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
+        test_recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
         
         # Classification report
         class_names = ['Relaxed', 'Focused', 'Stressed']
@@ -446,7 +452,7 @@ class ImprovedModelTrainer:
         
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         
-        # Accuracy
+        # Accuracy (Note: core model uses 'accuracy' metric which maps to sparse_categorical_accuracy)
         axes[0, 0].plot(self.history.history['accuracy'], label='Train')
         axes[0, 0].plot(self.history.history['val_accuracy'], label='Validation')
         axes[0, 0].set_title('Model Accuracy')
@@ -464,23 +470,11 @@ class ImprovedModelTrainer:
         axes[0, 1].legend()
         axes[0, 1].grid(True)
         
-        # Precision
-        axes[1, 0].plot(self.history.history['precision'], label='Train')
-        axes[1, 0].plot(self.history.history['val_precision'], label='Validation')
-        axes[1, 0].set_title('Model Precision')
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Precision')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True)
+        # Hide precision/recall subplots if not available in history
+        axes[1, 0].set_visible(False)
+        axes[1, 1].set_visible(False)
         
-        # Recall
-        axes[1, 1].plot(self.history.history['recall'], label='Train')
-        axes[1, 1].plot(self.history.history['val_recall'], label='Validation')
-        axes[1, 1].set_title('Model Recall')
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Recall')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
+        # Alternatively, we could collect these metrics during training or just leave empty
         
         plt.tight_layout()
         
