@@ -6,12 +6,12 @@ from threading import Lock
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.features import extract_features
 from src.core.ml.model import load_calibrated_model
-from src.utils.temporal_processing import temporal_smoothing
-from src.utils.artifacts import clean_eeg
-from src.utils.filters import apply_eeg_preprocessing
+from src.core.processing.temporal import temporal_smoothing
+from src.core.processing.artifacts import clean_eeg
+from src.core.processing.filters import apply_eeg_preprocessing
 from src.config.settings import PROCESSING_CONFIG
-from src.utils.data_handler import DataHandler, EEGDataPoint
-from src.utils.nlp_recommendations import NLPRecommendationEngine
+from src.services.data_service import DataHandler, EEGDataPoint
+from src.services.recommendation import NLPRecommendationEngine
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
