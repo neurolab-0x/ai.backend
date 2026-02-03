@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RecommendationContext:
-    """Context information for generating recommendations"""
+    """Context information for generating recommendations and explanations"""
     state_label: str
     confidence: float
     stress_ratio: float
@@ -25,6 +25,10 @@ class RecommendationContext:
     cognitive_metrics: Dict[str, float]
     state_transitions: int
     session_duration: float
+    timestamp: datetime = datetime.now()
+    subject_id: str = "unknown"
+    session_id: str = "unknown"
+    features: Dict[str, float] = None
 
 
 class RecommendationKnowledgeBase:
@@ -33,9 +37,56 @@ class RecommendationKnowledgeBase:
     def __init__(self):
         self.knowledge_base = self._build_knowledge_base()
         
-    def _build_knowledge_base(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Build comprehensive knowledge base for recommendations"""
+    def _build_knowledge_base(self) -> Dict[str, Any]:
+        """Build comprehensive knowledge base for recommendations and medical analysis"""
         return {
+            "medical_terminology": {
+                "relaxed": {
+                    "terms": ["alpha waves", "relaxed state", "mental calmness"],
+                    "normal_range": {"alpha": (8, 13), "theta": (4, 8)},
+                    "clinical_significance": "Indicates a relaxed, alert state of mind",
+                    "occupation_specific": {
+                        "software_engineer": "Optimal state for complex problem-solving",
+                        "healthcare_worker": "Good state for patient care and decision-making",
+                        "student": "Ideal state for learning and information retention"
+                    }
+                },
+                "focused": {
+                    "terms": ["beta waves", "concentration", "mental focus"],
+                    "normal_range": {"beta": (13, 30)},
+                    "clinical_significance": "Suggests active mental engagement and concentration",
+                    "occupation_specific": {
+                        "software_engineer": "Good for coding and debugging tasks",
+                        "healthcare_worker": "Appropriate for medical procedures",
+                        "student": "Suitable for studying and exam preparation"
+                    }
+                },
+                "drowsy": {
+                    "terms": ["theta waves", "drowsiness", "light sleep"],
+                    "normal_range": {"theta": (4, 8)},
+                    "clinical_significance": "May indicate transition to sleep or reduced alertness",
+                    "occupation_specific": {
+                        "software_engineer": "Risk for code errors and reduced productivity",
+                        "healthcare_worker": "Safety concern for patient care",
+                        "student": "May affect learning and retention"
+                    }
+                },
+                "stressed": {
+                    "terms": ["high beta", "stress response", "mental tension"],
+                    "normal_range": {"beta": (20, 30)},
+                    "clinical_significance": "Suggests heightened mental activity and potential stress",
+                    "occupation_specific": {
+                        "software_engineer": "May impact code quality and team collaboration",
+                        "healthcare_worker": "Could affect patient care quality",
+                        "student": "May hinder learning and performance"
+                    }
+                }
+            },
+            "safety_thresholds": {
+                "alpha_amplitude": {"default": 50, "software_engineer": 45, "healthcare_worker": 40, "student": 55},
+                "beta_amplitude": {"default": 30, "software_engineer": 35, "healthcare_worker": 25, "student": 32},
+                "theta_amplitude": {"default": 40, "software_engineer": 35, "healthcare_worker": 30, "student": 45}
+            },
             "stress_management": [
                 {
                     "condition": "high_stress",
@@ -263,17 +314,25 @@ class NLPRecommendationEngine:
         total_duration: float,
         confidence: float,
         cognitive_metrics: Dict[str, float],
-        state_transitions: int
+        state_transitions: int,
+        timestamp: Optional[datetime] = None,
+        subject_id: str = "unknown",
+        session_id: str = "unknown",
+        features: Optional[Dict[str, float]] = None
     ) -> RecommendationContext:
-        """Build comprehensive context for recommendation generation"""
+        """Build comprehensive context for recommendation generation and explanation"""
         
         # Calculate state ratios
-        stress_ratio = state_durations.get(2, 0) / total_duration
-        relaxation_ratio = state_durations.get(0, 0) / total_duration
-        focus_ratio = state_durations.get(1, 0) / total_duration
+        stress_ratio = state_durations.get(2, 0) / total_duration if total_duration > 0 else 0
+        relaxation_ratio = state_durations.get(0, 0) / total_duration if total_duration > 0 else 0
+        focus_ratio = state_durations.get(1, 0) / total_duration if total_duration > 0 else 0
         
         # Determine dominant state
-        dominant_state_idx = max(state_durations.items(), key=lambda x: x[1])[0]
+        if state_durations:
+            dominant_state_idx = max(state_durations.items(), key=lambda x: x[1])[0]
+        else:
+            dominant_state_idx = 0
+            
         state_labels = {0: "relaxed", 1: "focused", 2: "stressed"}
         state_label = state_labels.get(dominant_state_idx, "unknown")
         
@@ -285,7 +344,11 @@ class NLPRecommendationEngine:
             focus_ratio=focus_ratio,
             cognitive_metrics=cognitive_metrics,
             state_transitions=state_transitions,
-            session_duration=total_duration
+            session_duration=total_duration,
+            timestamp=timestamp or datetime.now(),
+            subject_id=subject_id,
+            session_id=session_id,
+            features=features or {}
         )
     
     def _generate_contextual_recommendations(
@@ -656,6 +719,135 @@ class NLPRecommendationEngine:
             "description": f"{emoji} {rating} - {score:.1f}/100"
         }
     
+    def generate_medical_explanation(
+        self,
+        context: RecommendationContext,
+        occupation: str = "default"
+    ) -> Dict[str, Any]:
+        """
+        Generate a professional medical explanation based on EEG analysis.
+        Rule-based engine replacing heavy NLP models for efficiency.
+        """
+        try:
+            state_info = self.knowledge_base.knowledge_base["medical_terminology"].get(
+                context.state_label, {}
+            )
+            
+            explanation = {
+                "clinical_observation": self._generate_clinical_observation(context, state_info),
+                "technical_analysis": self._generate_technical_analysis(context, state_info, occupation),
+                "interpretation": self._generate_interpretation(context, state_info),
+                "recommendations": self.generate_recommendations(
+                    {0: context.relaxation_ratio, 1: context.focus_ratio, 2: context.stress_ratio},
+                    1.0, # normalized
+                    context.confidence,
+                    context.cognitive_metrics,
+                    context.state_transitions
+                ),
+                "safety_assessment": self._generate_safety_assessment(context, occupation),
+                "metadata": {
+                    "timestamp": context.timestamp.isoformat(),
+                    "subject_id": context.subject_id,
+                    "session_id": context.session_id,
+                    "confidence": float(context.confidence)
+                }
+            }
+            
+            return explanation
+            
+        except Exception as e:
+            logger.error(f"Error generating medical explanation: {str(e)}")
+            raise
+
+    def _generate_clinical_observation(self, context: RecommendationContext, state_info: Dict) -> str:
+        """Generate clinical observation section"""
+        terms = state_info.get("terms", [])
+        observation = f"Clinical observation indicates a state of {context.state_label} "
+        observation += f"with key characteristics: {', '.join(terms)}. "
+        observation += f"The confidence level of this assessment is {context.confidence:.2%}. "
+        observation += state_info.get("clinical_significance", "")
+        return observation
+
+    def _generate_technical_analysis(self, context: RecommendationContext, state_info: Dict, occupation: str) -> str:
+        """Generate technical analysis section"""
+        analysis = "Technical Analysis:\n"
+        
+        # Power band analysis if features provided
+        if context.features:
+            analysis += "Wave Patterns:\n"
+            for feature, value in context.features.items():
+                if feature in state_info.get("normal_range", {}):
+                    n_range = state_info["normal_range"][feature]
+                    analysis += f"- {feature}: {value:.2f} "
+                    if n_range[0] <= value <= n_range[1]:
+                        analysis += "(within normal range)\n"
+                    else:
+                        analysis += "(outside normal range)\n"
+        
+        # Amplitude/Safety analysis
+        analysis += "\nSafety Assessment:\n"
+        thresholds = self.knowledge_base.knowledge_base["safety_thresholds"]
+        for metric, val in context.features.items():
+            if "amplitude" in metric.lower():
+                thresh_data = thresholds.get(metric, thresholds.get("beta_amplitude", {}))
+                thresh = thresh_data.get(occupation, thresh_data.get("default", 50))
+                analysis += f"- {metric}: {val:.2f} μV "
+                analysis += "(within safety limits)\n" if val <= thresh else "(exceeds safety limits)\n"
+        
+        return analysis
+
+    def _generate_interpretation(self, context: RecommendationContext, state_info: Dict) -> str:
+        """Generate clinical interpretation"""
+        interpretation = f"The EEG analysis suggests a {context.state_label} state. "
+        interpretation += state_info.get("clinical_significance", "")
+        if context.stress_ratio > 0.3:
+            interpretation += " Prolonged stress indicators may require intervention."
+        return interpretation
+
+    def _generate_safety_assessment(self, context: RecommendationContext, occupation: str) -> Dict[str, Any]:
+        """Generate structured safety assessment"""
+        assessment = {"alert_level": "mild", "concerns": [], "immediate_actions": []}
+        thresholds = self.knowledge_base.knowledge_base["safety_thresholds"]
+        
+        for metric, val in context.features.items():
+            if "amplitude" in metric.lower():
+                thresh_data = thresholds.get(metric, thresholds.get("beta_amplitude", {}))
+                thresh = thresh_data.get(occupation, thresh_data.get("default", 50))
+                
+                if val > thresh:
+                    assessment["concerns"].append(f"Elevated {metric} detected")
+                    if val > thresh * 1.5:
+                        assessment["alert_level"] = "severe"
+                        assessment["immediate_actions"].append("Urgent: Seek rest or professional consultation.")
+                    elif val > thresh * 1.2:
+                        assessment["alert_level"] = "moderate"
+                        assessment["immediate_actions"].append("Warning: Consider taking a break.")
+        
+        return assessment
+
+    def format_medical_report(self, explanation: Dict) -> str:
+        """Format the explanation into a professional report string"""
+        report = "EEG Clinical Analysis Report\n" + "="*40 + "\n"
+        report += f"Subject: {explanation['metadata']['subject_id']}\n"
+        report += f"Session: {explanation['metadata']['session_id']}\n\n"
+        
+        if explanation["safety_assessment"]["alert_level"] != "mild":
+            report += f"⚠️ ALERT: {explanation['safety_assessment']['alert_level'].upper()}\n"
+            for action in explanation["safety_assessment"]["immediate_actions"]:
+                report += f"• {action}\n"
+            report += "\n"
+            
+        report += "1. Clinical Observation\n" + explanation["clinical_observation"] + "\n\n"
+        report += "2. Interpretation\n" + explanation["interpretation"] + "\n\n"
+        report += "3. Recommendations\n"
+        for i, rec in enumerate(explanation["recommendations"][:3], 1):
+            if isinstance(rec, dict):
+                 report += f"{i}. {rec.get('text', '')}\n"
+            else:
+                 report += f"{i}. {str(rec).split(':', 1)[-1].strip() if ':' in str(rec) else str(rec)}\n"
+        
+        return report
+
     def save_report(self, report: Dict[str, Any], filepath: str = None) -> str:
         """Save report to JSON file"""
         try:
