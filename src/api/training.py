@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.models.model import train_hybrid_model, evaluate_model, model_comparison
-from src.utils.file_handler import validate_file, save_uploaded_file
+from src.utils.files import validate_file, save_uploaded_file
 from src.preprocessing.load_data import load_data
 from src.preprocessing.labeling import label_eeg_states
 from src.preprocessing.features import extract_features

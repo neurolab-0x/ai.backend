@@ -8,8 +8,8 @@ from sklearn.ensemble import RandomForestClassifier
 from imblearn.over_sampling import SMOTE, ADASYN
 from collections import Counter
 from src.preprocessing.features import extract_features
-from src.utils.artifacts import clean_eeg
-from src.utils.filters import apply_eeg_preprocessing, filter_eeg_bands
+from src.core.processing.artifacts import clean_eeg
+from src.core.processing.filters import apply_eeg_preprocessing, filter_eeg_bands
 import logging
 from typing import Tuple, Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor

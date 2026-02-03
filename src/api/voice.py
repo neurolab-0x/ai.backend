@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 import io
 
-from src.utils.voice_processor import VoiceProcessor
+from src.services.voice import VoiceProcessor
 
 logger = logging.getLogger(__name__)
 
