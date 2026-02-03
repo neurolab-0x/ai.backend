@@ -5,13 +5,13 @@ from collections import deque
 from threading import Lock
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.features import extract_features
-from src.utils.model_loading import load_calibrated_model
+from src.core.ml.model import load_calibrated_model
 from src.utils.temporal_processing import temporal_smoothing
 from src.utils.artifacts import clean_eeg
 from src.utils.filters import apply_eeg_preprocessing
 from src.config.settings import PROCESSING_CONFIG
 from src.utils.data_handler import DataHandler, EEGDataPoint
-from src.utils.explanation_generator import ExplanationGenerator
+from src.utils.nlp_recommendations import NLPRecommendationEngine
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -172,7 +172,7 @@ def calculate_adaptive_window(data, min_window=50, max_window=500):
 
 # Initialize components
 data_handler = DataHandler(buffer_size=1000)
-explanation_generator = ExplanationGenerator()
+recommendation_engine = NLPRecommendationEngine()
 
 async def process_realtime_data(data: Dict[str, Any], model) -> Dict[str, Any]:
     """
@@ -207,7 +207,7 @@ async def process_realtime_data(data: Dict[str, Any], model) -> Dict[str, Any]:
         # Process data point
         explanation = await data_handler.process_data_point(
             data_point,
-            explanation_generator
+            recommendation_engine
         )
         
         # Add to buffer for temporal analysis

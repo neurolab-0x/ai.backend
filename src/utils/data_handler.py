@@ -191,35 +191,43 @@ class DataHandler:
             
     async def process_data_point(self, 
                                data_point: EEGDataPoint,
-                               explanation_generator) -> Dict:
+                               recommendation_engine) -> Dict:
         """
-        Process a single data point and generate explanation.
+        Process a single data point and generate medical explanation.
         
         Parameters:
         -----------
         data_point : EEGDataPoint
             The EEG data point to process
-        explanation_generator : ExplanationGenerator
-            The explanation generator instance
+        recommendation_engine : NLPRecommendationEngine
+            The recommendation and explanation engine instance
             
         Returns:
         --------
         Dict
-            Generated explanation for the data point
+            Generated medical explanation for the data point
         """
         try:
-            # Convert data point to EEGState
-            eeg_state = EEGState(
-                state=data_point.state,
-                confidence=data_point.confidence,
-                features=data_point.features,
+            # Build context for the recommendation engine
+            # For a single data point, we treat it as an instantaneous snapshot
+            context = recommendation_engine._build_context(
+                state_durations={0: 0, 1: 0, 2: 0},  # Initialized empty
+                total_duration=1.0,
+                confidence=data_point.confidence or 0.0,
+                cognitive_metrics={},
+                state_transitions=0,
                 timestamp=data_point.timestamp,
                 subject_id=data_point.subject_id,
-                session_id=data_point.session_id
+                session_id=data_point.session_id,
+                features=data_point.features
             )
             
-            # Generate explanation
-            explanation = explanation_generator.generate_explanation(eeg_state)
+            # Map state label back to dominant index for context consistency
+            state_map = {"relaxed": 0, "focused": 1, "stressed": 2}
+            context.state_label = data_point.state.lower() if data_point.state else "relaxed"
+            
+            # Generate medical explanation
+            explanation = recommendation_engine.generate_medical_explanation(context)
             return explanation
             
         except Exception as e:
