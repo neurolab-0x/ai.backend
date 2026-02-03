@@ -3,7 +3,7 @@ Core package for the NeuroLab AI Model Server.
 Contains models, data handling, and ML processing components.
 """
 
-from .models.eeg import EEGDataPoint, EEGSession, EEGFeatures
+from src.schemas.eeg import EEGDataPoint, EEGSession, EEGFeatures
 from .data.handler import DataHandler
 from src.preprocessing import (
     load_data,
@@ -11,11 +11,11 @@ from src.preprocessing import (
     extract_features,
     preprocess_data
 )
-from src.utils.temporal_processing import (
+from src.core.processing.temporal import (
     temporal_smoothing,
     calculate_state_durations
 )
-from src.utils.nlp_recommendations import get_recommendations as generate_recommendations
+from src.services.recommendation import get_recommendations as generate_recommendations
 from .ml.model import (
     create_model,
     load_calibrated_model,

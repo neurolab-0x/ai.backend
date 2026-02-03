@@ -9,11 +9,11 @@ from src.preprocessing import (
     extract_features,
     preprocess_data
 )
-from src.utils.temporal_processing import (
+from src.core.processing.temporal import (
     temporal_smoothing,
     calculate_state_durations
 )
-from src.utils.nlp_recommendations import get_recommendations as generate_recommendations
+from src.services.recommendation import get_recommendations as generate_recommendations
 from .model import (
     create_model,
     load_calibrated_model,
