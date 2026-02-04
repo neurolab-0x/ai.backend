@@ -235,10 +235,10 @@ async def clear_stream_buffer(
     request: Request, 
     client_id: Optional[str] = None
 ):
-    """Clear client stream buffer with authentication"""
+    """Clear client stream buffer"""
     try:
         # Determine client identifier
-        client_identifier = client_id or validated_client_id or request.client.host
+        client_identifier = client_id or request.client.host
         
         # Log action
         logger.info(f"Clearing buffer for client {client_identifier}")
