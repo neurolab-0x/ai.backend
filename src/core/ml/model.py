@@ -128,9 +128,9 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
     x = GaussianNoise(0.01)(inputs)
     
     if model_type == 'original':
-        x = Conv1D(64, kernel_size=3, activation='relu', 
+        x = Conv1D(64, kernel_size=3, padding='same', activation='relu', 
                   kernel_regularizer=l1_l2(l1=l1_reg, l2=l2_reg))(x)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = BatchNormalization()(x)
         x = SpatialDropout1D(dropout_rate)(x)
         x = LSTM(64, return_sequences=True)(x)
@@ -141,11 +141,11 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
     elif model_type == 'enhanced_cnn_lstm':
         x = SeparableConv1D(32, kernel_size=3, padding='same', activation='relu')(x)
         x = BatchNormalization()(x)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = SpatialDropout1D(dropout_rate)(x)
         x = SeparableConv1D(64, kernel_size=3, padding='same', activation='relu')(x)
         x = BatchNormalization()(x)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = SpatialDropout1D(dropout_rate)(x)
         x = SeparableConv1D(128, kernel_size=3, padding='same', activation='relu')(x)
         x = BatchNormalization()(x)
@@ -161,9 +161,9 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
         x = Activation('relu')(x)
         x = SpatialDropout1D(dropout_rate)(x)
         x = residual_block(x, filters=64, dropout_rate=dropout_rate, use_separable=use_separable)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = residual_block(x, filters=128, dropout_rate=dropout_rate, use_separable=use_separable)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = attention_lstm_layer(x, units=64, dropout_rate=dropout_rate)
         x = Dense(128, activation='relu', kernel_regularizer=l1_l2(l1=l1_reg, l2=l2_reg))(x)
         x = BatchNormalization()(x)
@@ -173,7 +173,7 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
         x = SeparableConv1D(64, kernel_size=3, padding='same')(x)
         x = BatchNormalization()(x)
         x = Activation('relu')(x)
-        x = MaxPooling1D(pool_size=2)(x)
+        x = MaxPooling1D(pool_size=2, padding='same')(x)
         x = SpatialDropout1D(dropout_rate)(x)
         embed_dim = 64
         x = transformer_block(x, embed_dim=embed_dim, num_heads=4, ff_dim=128, dropout=dropout_rate, use_relative_pos=use_relative_pos)

@@ -253,7 +253,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                    num_features: Optional[int] = None, clean_artifacts: bool = True,
                    use_robust_scaler: bool = False, balance_method: str = 'smote',
                    parallel_processing: bool = True, cache_dir: Optional[str] = None,
-                   n_splits: int = 5) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+                   n_splits: int = 5, **kwargs) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Enhanced preprocessing pipeline with improved error handling, caching, and cross-validation
     
