@@ -127,6 +127,41 @@ class ImprovedModelTrainer:
             'confusion_matrix': cm.tolist()
         }
         
+        # Generate interpretability analysis
+        try:
+            from src.core.ml.interpretability import ModelInterpretability
+            
+            logger.info("Generating SHAP feature importance analysis...")
+            interpreter = ModelInterpretability(self.model)
+            interpreter.set_feature_names(['alpha', 'beta', 'theta', 'delta', 'gamma'])
+            
+            # Generate SHAP explanations
+            shap_results = interpreter.explain_with_shap(X_test, n_samples=min(50, len(X_test)))
+            
+            # Extract feature importance (convert to serializable format)
+            feature_importance = {}
+            for class_idx, importance_array in shap_results['feature_importance'].items():
+                if isinstance(importance_array, np.ndarray):
+                    feature_importance[f'class_{class_idx}'] = {
+                        'alpha': float(importance_array[0]) if len(importance_array) > 0 else 0.0,
+                        'beta': float(importance_array[1]) if len(importance_array) > 1 else 0.0,
+                        'theta': float(importance_array[2]) if len(importance_array) > 2 else 0.0,
+                        'delta': float(importance_array[3]) if len(importance_array) > 3 else 0.0,
+                        'gamma': float(importance_array[4]) if len(importance_array) > 4 else 0.0,
+                    }
+            
+            results['interpretability'] = {
+                'method': 'shap',
+                'feature_importance_by_class': feature_importance,
+                'n_samples_analyzed': min(50, len(X_test))
+            }
+            
+            logger.info("Interpretability analysis complete")
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate interpretability analysis: {str(e)}")
+            results['interpretability'] = {'error': str(e)}
+        
         logger.info(f"Test Accuracy: {results['test_accuracy']:.4f}")
         return results
 

@@ -135,7 +135,7 @@ async def train_model_background(
             # For now, we'll signal it's handled in the training logic if data permits.
             pass
         
-        training_jobs[job_id]['progress'] = 0.8
+        training_jobs[job_id]['progress'] = 0.7
         training_jobs[job_id]['message'] = 'Training complete, evaluating model...'
         
         # Evaluate model if test data provided
@@ -143,6 +143,48 @@ async def train_model_background(
         if X_test is not None and y_test is not None:
             metrics = evaluate_model(model, X_test, y_test, calibrate=True)
             logger.info(f"Model evaluation complete for job {job_id}")
+        
+        training_jobs[job_id]['progress'] = 0.85
+        training_jobs[job_id]['message'] = 'Generating model interpretability analysis...'
+        
+        # Generate interpretability analysis
+        interpretability_results = {}
+        try:
+            from src.core.ml.interpretability import ModelInterpretability
+            
+            interpreter = ModelInterpretability(model)
+            interpreter.set_feature_names(['alpha', 'beta', 'theta', 'delta', 'gamma'])
+            
+            # Use test data if available, otherwise use subset of training data
+            X_explain = X_test if X_test is not None else X_train[:100]
+            
+            # Generate SHAP explanations
+            logger.info(f"Generating SHAP feature importance for job {job_id}")
+            shap_results = interpreter.explain_with_shap(X_explain, n_samples=min(50, len(X_explain)))
+            
+            # Extract feature importance (convert to serializable format)
+            feature_importance = {}
+            for class_idx, importance_array in shap_results['feature_importance'].items():
+                if isinstance(importance_array, np.ndarray):
+                    feature_importance[f'class_{class_idx}'] = {
+                        'alpha': float(importance_array[0]) if len(importance_array) > 0 else 0.0,
+                        'beta': float(importance_array[1]) if len(importance_array) > 1 else 0.0,
+                        'theta': float(importance_array[2]) if len(importance_array) > 2 else 0.0,
+                        'delta': float(importance_array[3]) if len(importance_array) > 3 else 0.0,
+                        'gamma': float(importance_array[4]) if len(importance_array) > 4 else 0.0,
+                    }
+            
+            interpretability_results = {
+                'method': 'shap',
+                'feature_importance_by_class': feature_importance,
+                'n_samples_analyzed': min(50, len(X_explain))
+            }
+            
+            logger.info(f"Interpretability analysis complete for job {job_id}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate interpretability analysis for job {job_id}: {str(e)}")
+            interpretability_results = {'error': str(e)}
         
         # Update job status
         training_jobs[job_id]['status'] = 'completed'
@@ -154,7 +196,8 @@ async def train_model_background(
             'final_val_accuracy': float(history.history['val_accuracy'][-1]),
             'final_train_loss': float(history.history['loss'][-1]),
             'final_val_loss': float(history.history['val_loss'][-1]),
-            'test_metrics': metrics if metrics else None
+            'test_metrics': metrics if metrics else None,
+            'interpretability': interpretability_results
         }
         
         logger.info(f"Training job {job_id} completed successfully")
