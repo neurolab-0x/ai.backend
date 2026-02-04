@@ -312,12 +312,20 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                 for warning in validation_results['warnings']:
                     logger.warning(warning)
         
-        # Extract features if needed
+        # Extract EEG channel list (exclude timestamp and state columns)
+        numerical_cols = [col for col in df.columns if df[col].dtype in [np.float64, np.int64]]
+        eeg_channels = [col for col in numerical_cols if col.lower() not in 
+                       ['timestamp', 'time', 'eeg_state', 'state', 'label', target_column]]
+        
+        # Unify raw data detection with features.py check
+        # Raw data: many rows (>50), few columns (channels)
+        # OR columns contains actual signals (arrays/lists)
         is_raw_data = False
-        if target_column in df.columns and len(df.columns) < 10:
-            # Check if columns contain actual signals (arrays/lists) or just scalars
-            for col in df.columns:
-                if col != target_column:
+        if not df.empty:
+            if len(df) > 50 and len(eeg_channels) < 100:
+                is_raw_data = True
+            else:
+                for col in eeg_channels:
                     first_val = df[col].iloc[0]
                     if isinstance(first_val, (np.ndarray, list)) or (hasattr(first_val, 'len') and len(first_val) > 1):
                         is_raw_data = True

@@ -1,20 +1,18 @@
-"""
-Generate realistic EEG test datasets for different mental states.
-Creates distinct frequency patterns for relaxed, focused, and stressed states.
-"""
 import os
 import csv
 import numpy as np
+import argparse
 from datetime import datetime
+from typing import List, Optional
 
-def generate_eeg_signal(duration_sec=1.0, sampling_rate=250, state='relaxed', channels=16):
+def generate_eeg_signal(duration_sec: float = 1.028, sampling_rate: int = 250, state: str = 'relaxed', channels: int = 16):
     """
     Generate realistic EEG signals with state-specific frequency characteristics.
     
-    States:
-    - relaxed: High alpha (8-13 Hz), low beta
-    - focused: High beta (13-30 Hz), moderate alpha
-    - stressed: High beta, high gamma (30-50 Hz), low alpha
+    States and their characteristics (unified with training script):
+    - relaxed: High alpha (8-13 Hz), low beta, moderate theta
+    - focused: High beta (15-25 Hz), moderate alpha, low theta
+    - stressed: Very high beta (20-40 Hz), high gamma, low alpha, elevated theta
     """
     num_samples = int(duration_sec * sampling_rate)
     time = np.linspace(0, duration_sec, num_samples)
@@ -22,172 +20,136 @@ def generate_eeg_signal(duration_sec=1.0, sampling_rate=250, state='relaxed', ch
     # Initialize signal for all channels
     signals = np.zeros((num_samples, channels))
     
+    # Standard EEG bands
+    BANDS = {
+        'delta': (0.5, 4),
+        'theta': (4, 8),
+        'alpha': (8, 13),
+        'beta': (13, 30),
+        'gamma': (30, 50)
+    }
+    
+    # State-specific amplitude profiles (arbitrary units)
+    STATE_PROFILES = {
+        'relaxed': {'alpha': (20, 35), 'beta': (3, 10), 'theta': (8, 15), 'delta': (2, 6), 'gamma': (1, 4)},
+        'focused': {'alpha': (10, 18), 'beta': (18, 30), 'theta': (3, 8), 'delta': (1, 5), 'gamma': (5, 12)},
+        'stressed': {'alpha': (3, 10), 'beta': (30, 50), 'theta': (10, 20), 'delta': (4, 8), 'gamma': (15, 30)}
+    }
+    
+    profile = STATE_PROFILES.get(state, STATE_PROFILES['relaxed'])
+    
     for ch in range(channels):
-        # Base noise
-        signal = np.random.normal(0, 2, num_samples)
+        # Base pink noise (1/f) simulation
+        signal = np.zeros(num_samples)
+        for i in range(1, num_samples // 2):
+            freq = i * (sampling_rate / num_samples)
+            amplitude = 1.0 / (freq ** 0.8) # Pink-ish noise
+            signal += amplitude * np.sin(2 * np.pi * freq * time + np.random.uniform(0, 2*np.pi))
         
-        if state == 'relaxed':
-            # High alpha (8-13 Hz) - relaxed, eyes closed
-            alpha_freq = np.random.uniform(8, 13)
-            alpha_amp = np.random.uniform(15, 25)
-            signal += alpha_amp * np.sin(2 * np.pi * alpha_freq * time + np.random.uniform(0, 2*np.pi))
+        # Normalize baseline noise
+        signal = (signal - np.mean(signal)) / np.std(signal) * 5.0
+        
+        # Add state-specific band peaks
+        for band, (low, high) in BANDS.items():
+            amp_min, amp_max = profile[band]
             
-            # Low beta (13-20 Hz)
-            beta_freq = np.random.uniform(13, 20)
-            beta_amp = np.random.uniform(3, 8)
-            signal += beta_amp * np.sin(2 * np.pi * beta_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # Theta (4-8 Hz) - drowsiness
-            theta_freq = np.random.uniform(4, 8)
-            theta_amp = np.random.uniform(5, 10)
-            signal += theta_amp * np.sin(2 * np.pi * theta_freq * time + np.random.uniform(0, 2*np.pi))
-            
-        elif state == 'focused':
-            # Moderate alpha
-            alpha_freq = np.random.uniform(9, 12)
-            alpha_amp = np.random.uniform(8, 15)
-            signal += alpha_amp * np.sin(2 * np.pi * alpha_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # High beta (15-25 Hz) - concentration
-            beta_freq = np.random.uniform(15, 25)
-            beta_amp = np.random.uniform(12, 20)
-            signal += beta_amp * np.sin(2 * np.pi * beta_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # Low gamma (30-40 Hz) - cognitive processing
-            gamma_freq = np.random.uniform(30, 40)
-            gamma_amp = np.random.uniform(3, 7)
-            signal += gamma_amp * np.sin(2 * np.pi * gamma_freq * time + np.random.uniform(0, 2*np.pi))
-            
-        elif state == 'stressed':
-            # Low alpha - anxiety
-            alpha_freq = np.random.uniform(8, 11)
-            alpha_amp = np.random.uniform(3, 8)
-            signal += alpha_amp * np.sin(2 * np.pi * alpha_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # High beta (20-30 Hz) - anxiety, stress
-            beta_freq = np.random.uniform(20, 30)
-            beta_amp = np.random.uniform(15, 25)
-            signal += beta_amp * np.sin(2 * np.pi * beta_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # High gamma (35-50 Hz) - high arousal
-            gamma_freq = np.random.uniform(35, 50)
-            gamma_amp = np.random.uniform(8, 15)
-            signal += gamma_amp * np.sin(2 * np.pi * gamma_freq * time + np.random.uniform(0, 2*np.pi))
-            
-            # Add more noise for stressed state
-            signal += np.random.normal(0, 5, num_samples)
+            # Generate 2-3 sine waves within the band for more realism than a single frequency
+            num_sines = 3
+            for _ in range(num_sines):
+                freq = np.random.uniform(low, high)
+                amp = np.random.uniform(amp_min, amp_max) / num_sines
+                signal += amp * np.sin(2 * np.pi * freq * time + np.random.uniform(0, 2*np.pi))
         
         # Add channel-specific variations
-        if ch < 4:  # Frontal channels (Fp1, Fp2, F3, F4)
+        if ch < 4:  # Frontal - more frontal alpha/beta variation
             signal *= np.random.uniform(0.9, 1.1)
-        elif ch < 8:  # Central and Parietal (C3, C4, P3, P4)
-            signal *= np.random.uniform(0.95, 1.05)
-        else:  # Occipital and Temporal
-            signal *= np.random.uniform(0.85, 1.15)
+        elif ch >= 12:  # Occipital - more alpha
+            if state == 'relaxed':
+                signal *= 1.2
         
+        # Add some random high-frequency "spikes"
+        if np.random.random() > 0.9:
+            spike_idx = np.random.randint(0, num_samples)
+            signal[spike_idx:spike_idx+5] += np.random.uniform(50, 100)
+            
         signals[:, ch] = signal
     
     return signals
 
-def generate_test_dataset(state='relaxed', num_epochs=50, duration_sec=1.028, 
-                         sampling_rate=250, output_dir='data/testing_data'):
-    """
-    Generate a complete test dataset for a specific mental state.
-    
-    Args:
-        state: 'relaxed', 'focused', or 'stressed'
-        num_epochs: Number of 1-second epochs to generate
-        duration_sec: Duration of each epoch (default 1.028s = 257 samples at 250Hz)
-        sampling_rate: Sampling rate in Hz
-        output_dir: Directory to save the file
-    """
+def generate_dataset(
+    state: str, 
+    num_epochs: int, 
+    duration_sec: float, 
+    sampling_rate: int, 
+    output_dir: str,
+    channel_names: List[str]
+):
+    """Generate and save a dataset for a specific state."""
     os.makedirs(output_dir, exist_ok=True)
     
-    # Channel names (standard 10-20 system)
-    channels = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", 
-                "O1", "O2", "F7", "F8", "T3", "T4", "T5", "T6"]
-    
-    filename = f"{output_dir}/test_{state}_{num_epochs}epochs.csv"
+    filename = os.path.join(output_dir, f"test_{state}_{num_epochs}epochs.csv")
     
     with open(filename, mode='w', newline='') as f:
         writer = csv.writer(f)
-        # Write header
-        writer.writerow(["timestamp"] + channels)
+        writer.writerow(["timestamp"] + channel_names)
         
         timestamp = 0.0
         for epoch in range(num_epochs):
-            # Generate EEG signal for this epoch
-            signals = generate_eeg_signal(duration_sec, sampling_rate, state, len(channels))
+            signals = generate_eeg_signal(duration_sec, sampling_rate, state, len(channel_names))
             
-            # Write each sample
             for sample_idx in range(signals.shape[0]):
                 row = [f"{timestamp:.4f}"] + [f"{val:.2f}" for val in signals[sample_idx]]
                 writer.writerow(row)
                 timestamp += 1.0 / sampling_rate
     
-    print(f"✓ Generated {state} dataset: {filename}")
-    print(f"  - {num_epochs} epochs × {int(duration_sec * sampling_rate)} samples = {num_epochs * int(duration_sec * sampling_rate)} total samples")
+    print(f"✓ Generated {state} dataset: {filename} ({num_epochs} epochs)")
     return filename
 
-def generate_mixed_state_dataset(num_epochs_per_state=30, output_dir='data/testing_data'):
-    """
-    Generate a dataset with mixed mental states for comprehensive testing.
-    """
-    os.makedirs(output_dir, exist_ok=True)
+def main():
+    parser = argparse.ArgumentParser(description="Generate realistic EEG test datasets.")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per state (default: 50)")
+    parser.add_argument("--rate", type=int, default=250, help="Sampling rate in Hz (default: 250)")
+    parser.add_argument("--duration", type=float, default=1.028, help="Epoch duration in seconds (default: 1.028)")
+    parser.add_argument("--outdir", type=str, default="data/testing_data", help="Output directory")
+    parser.add_argument("--mixed", action="store_true", help="Generate a mixed states dataset")
+    parser.add_argument("--states", nargs="+", default=["relaxed", "focused", "stressed"], help="States to generate")
+    parser.add_argument("--channels", type=int, default=16, help="Number of channels (max 16 for standard names)")
     
-    channels = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", 
-                "O1", "O2", "F7", "F8", "T3", "T4", "T5", "T6"]
+    args = parser.parse_args()
     
-    filename = f"{output_dir}/test_mixed_states.csv"
-    duration_sec = 1.028
-    sampling_rate = 250
+    all_channels = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", 
+                    "O1", "O2", "F7", "F8", "T3", "T4", "T5", "T6"]
+    channels = all_channels[:args.channels]
     
-    with open(filename, mode='w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp"] + channels)
-        
-        timestamp = 0.0
-        states = ['relaxed', 'focused', 'stressed']
-        
-        for state in states:
-            print(f"  Generating {num_epochs_per_state} epochs of '{state}' state...")
-            for epoch in range(num_epochs_per_state):
-                signals = generate_eeg_signal(duration_sec, sampling_rate, state, len(channels))
-                
-                for sample_idx in range(signals.shape[0]):
-                    row = [f"{timestamp:.4f}"] + [f"{val:.2f}" for val in signals[sample_idx]]
-                    writer.writerow(row)
-                    timestamp += 1.0 / sampling_rate
-    
-    total_samples = num_epochs_per_state * 3 * int(duration_sec * sampling_rate)
-    print(f"✓ Generated mixed states dataset: {filename}")
-    print(f"  - {num_epochs_per_state} epochs per state × 3 states = {total_samples} total samples")
-    return filename
-
-if __name__ == "__main__":
     print("=" * 60)
     print("EEG Test Dataset Generator")
+    print(f"Started at: {datetime.now().strftime('%H:%M:%S')}")
     print("=" * 60)
-    print()
     
-    # Generate individual state datasets
-    print("Generating individual state datasets...")
-    generate_test_dataset('relaxed', num_epochs=50)
-    generate_test_dataset('focused', num_epochs=50)
-    generate_test_dataset('stressed', num_epochs=50)
-    print()
-    
-    # Generate mixed state dataset
-    print("Generating mixed state dataset...")
-    generate_mixed_state_dataset(num_epochs_per_state=30)
-    print()
-    
+    if args.mixed:
+        filename = os.path.join(args.outdir, "test_mixed_states.csv")
+        os.makedirs(args.outdir, exist_ok=True)
+        
+        with open(filename, mode='w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp"] + channels)
+            
+            timestamp = 0.0
+            for state in args.states:
+                print(f"  Generating {args.epochs} epochs of '{state}'...")
+                for _ in range(args.epochs):
+                    signals = generate_eeg_signal(args.duration, args.rate, state, len(channels))
+                    for sample_idx in range(signals.shape[0]):
+                        row = [f"{timestamp:.4f}"] + [f"{val:.2f}" for val in signals[sample_idx]]
+                        writer.writerow(row)
+                        timestamp += 1.0 / args.rate
+        print(f"✓ Generated mixed states dataset: {filename}")
+    else:
+        for state in args.states:
+            generate_dataset(state, args.epochs, args.duration, args.rate, args.outdir, channels)
+            
     print("=" * 60)
-    print("✓ All test datasets generated successfully!")
-    print("=" * 60)
-    print()
-    print("Test these files with your API:")
-    print("  - data/testing_data/test_relaxed_50epochs.csv")
-    print("  - data/testing_data/test_focused_50epochs.csv")
-    print("  - data/testing_data/test_stressed_50epochs.csv")
-    print("  - data/testing_data/test_mixed_states.csv")
+    print("✓ Done!")
+
+if __name__ == "__main__":
+    main()
