@@ -81,7 +81,7 @@ class StreamingResponse(BaseModel):
     encrypted: bool = False
     interpretability: Optional[Dict[str, Any]] = None
 
-@router.post("/api/stream", response_model=StreamingResponse)
+@router.post("/", response_model=StreamingResponse)
 async def stream_eeg_data(
     request: Request, 
     data: EEGData,
@@ -232,7 +232,7 @@ async def stream_eeg_data(
         logger.error(f"Error in streaming endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
-@router.post("/api/stream/clear")
+@router.post("/clear")
 async def clear_stream_buffer(
     request: Request, 
     client_id: Optional[str] = None

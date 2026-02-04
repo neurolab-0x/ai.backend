@@ -14,7 +14,7 @@ from src.services.voice import VoiceProcessor
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/voice", tags=["Voice Analysis"])
+router = APIRouter(tags=["Voice Analysis"])
 
 # Initialize voice processor (singleton)
 voice_processor = None
