@@ -37,7 +37,7 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.features import extract_features
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.labeling import label_eeg_states
-from src.models.model import build_model
+from src.core.ml.model import build_model, train_hybrid_model, evaluate_model, ModelInterpretability
 
 # Configure logging
 logging.basicConfig(
@@ -311,6 +311,79 @@ class ImprovedModelTrainer:
             'fold_histories': fold_histories
         }
     
+    def train_with_loso(
+        self,
+        df: pd.DataFrame,
+        epochs: int = 100,
+        batch_size: int = 32,
+        architecture: str = "lstm_attention"
+    ) -> Dict[str, Any]:
+        """
+        Train and evaluate using Leave-One-Subject-Out cross-validation
+        
+        Args:
+            df: Full dataframe including subject_id
+            epochs: Training epochs
+            batch_size: Batch size
+            architecture: Model architecture
+            
+        Returns:
+            Dictionary with LOSO results
+        """
+        if 'subject_id' not in df.columns:
+            logger.error("subject_id column missing for LOSO validation")
+            return {}
+            
+        subjects = df['subject_id'].unique()
+        logger.info(f"Starting LOSO validation with {len(subjects)} subjects")
+        
+        loso_results = []
+        
+        for subject in subjects:
+            logger.info(f"LOSO: Testing on subject {subject}")
+            
+            # Split data
+            train_df = df[df['subject_id'] != subject]
+            val_df = df[df['subject_id'] == subject]
+            
+            # Extract features and labels
+            feature_cols = ['alpha', 'beta', 'theta', 'delta', 'gamma']
+            X_train = train_df[feature_cols].values.reshape(-1, 5, 1)
+            y_train = train_df['state'].values
+            X_val = val_df[feature_cols].values.reshape(-1, 5, 1)
+            y_val = val_df['state'].values
+            
+            # Build and train
+            model = self.build_advanced_model(
+                input_shape=(5, 1),
+                num_classes=3,
+                architecture=architecture
+            )
+            
+            model.fit(
+                X_train, y_train,
+                validation_data=(X_val, y_val),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=self.create_callbacks(patience=5),
+                verbose=0
+            )
+            
+            # Evaluate
+            metrics = evaluate_model(model, X_val, y_val)
+            metrics['subject_id'] = subject
+            loso_results.append(metrics)
+            
+            logger.info(f"Subject {subject} - Accuracy: {metrics['accuracy']:.4f}")
+            
+        # Aggregate results
+        mean_acc = np.mean([r['accuracy'] for r in loso_results])
+        return {
+            'subject_results': loso_results,
+            'mean_accuracy': float(mean_acc),
+            'std_accuracy': float(np.std([r['accuracy'] for r in loso_results]))
+        }
+    
     def train(
         self,
         X_train: np.ndarray,
@@ -442,6 +515,19 @@ class ImprovedModelTrainer:
         logger.info(f"Test Accuracy: {test_acc:.4f}")
         logger.info(f"F1 Score (Macro): {f1_macro:.4f}")
         
+        # Add Interpretability analysis
+        try:
+            logger.info("Generating interpretability report...")
+            interpreter = ModelInterpretability(self.model)
+            interpreter.set_feature_names(['alpha', 'beta', 'theta', 'delta', 'gamma'])
+            
+            # Use SHAP on a subset of test data
+            shap_report = interpreter.explain_with_shap(X_test, n_samples=min(50, len(X_test)))
+            results['feature_importance'] = shap_report['feature_importance']
+            logger.info("Interpretability report included in results")
+        except Exception as e:
+            logger.warning(f"Could not generate interpretability report: {str(e)}")
+            
         return results
     
     def plot_training_history(self, save_path: str = None):
@@ -526,6 +612,30 @@ class ImprovedModelTrainer:
             json.dump(full_results, f, indent=2)
         
         logger.info(f"Results saved to {filepath}")
+        
+        # Update experiment registry
+        registry_path = os.path.join(self.results_dir, 'experiment_registry.json')
+        registry = []
+        if os.path.exists(registry_path):
+            try:
+                with open(registry_path, 'r') as f:
+                    registry = json.load(f)
+            except:
+                pass
+        
+        registry.append({
+            'experiment_id': os.path.basename(filepath),
+            'timestamp': datetime.now().isoformat(),
+            'config': self.training_config,
+            'metrics': {
+                'accuracy': results.get('test_accuracy'),
+                'f1': results.get('f1_macro')
+            }
+        })
+        
+        with open(registry_path, 'w') as f:
+            json.dump(registry, f, indent=2)
+            
         return filepath
 
 
@@ -541,7 +651,8 @@ def main():
     EPOCHS = 100
     BATCH_SIZE = 32
     USE_AUGMENTATION = True
-    USE_CROSS_VALIDATION = False  # Set to True for CV
+    USE_CROSS_VALIDATION = False  # k-fold
+    USE_LOSO = True              # Leave-One-Subject-Out
     
     try:
         # Load data
@@ -579,6 +690,17 @@ def main():
             
             # Save CV results
             trainer.save_results(cv_results, 'cv_results.json')
+            
+        elif USE_LOSO:
+            # LOSO validation
+            loso_results = trainer.train_with_loso(
+                df,
+                epochs=EPOCHS,
+                batch_size=BATCH_SIZE,
+                architecture=ARCHITECTURE
+            )
+            trainer.save_results(loso_results, 'loso_results.json')
+            logger.info(f"LOSO Mean Accuracy: {loso_results['mean_accuracy']:.4f}")
             
         else:
             # Train-test split

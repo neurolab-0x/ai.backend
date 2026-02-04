@@ -72,5 +72,5 @@ LOGGING_CONFIG = {
     'application_log_path': './logs/application.log'
 }
 
-MODEL_VERSION = "nlPT 1-Preview"
-MODEL_NAME = "neurai nlPT"
+MODEL_VERSION = "v3.1.0"
+MODEL_NAME = "NeuroLab Axon Prime"

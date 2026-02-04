@@ -59,7 +59,7 @@ class ModelManager:
             "model_loaded": self.model is not None,
             "tensorflow_available": self.tensorflow_available,
             "model_path": self.model_path,
-            "model_version": "1.0.0",
+            "model_version": "3.1.0",
             "system_time": datetime.now().isoformat()
         }
         

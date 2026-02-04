@@ -91,6 +91,13 @@ def validate_input_data(df: pd.DataFrame, target_column: str) -> Dict[str, Any]:
                     f"Severe class imbalance detected: {max_class_count/min_class_count:.2f}x"
                 )
         
+        # Check for mandatory identifiers
+        for col in ['subject_id', 'session_id']:
+            if col not in df.columns:
+                validation_results['warnings'].append(f"Missing recommended column: {col}")
+            elif df[col].isnull().any():
+                validation_results['warnings'].append(f"Found null values in {col}")
+        
         return validation_results
         
     except Exception as e:
@@ -270,11 +277,17 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         Directory to cache intermediate results
     n_splits : int
         Number of cross-validation splits
+    min_snr : float or None
+        Minimum SNR threshold for pruning (optional)
+    min_entropy : float or None
+        Minimum entropy threshold for pruning (optional)
         
     Returns:
     -------
     X_train, X_test, y_train, y_test, metadata
     """
+    min_snr = kwargs.get('min_snr', None)
+    min_entropy = kwargs.get('min_entropy', None)
     try:
         logger.info("Starting enhanced preprocessing pipeline...")
         metadata = {
@@ -313,24 +326,32 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                         futures = []
                         for i in tqdm(range(len(df)), desc="Extracting features"):
                             row_df = df.iloc[i:i+1]
-                            if clean_artifacts:
-                                futures.append(executor.submit(
-                                    _process_row_with_artifacts, row_df, target_column
-                                ))
-                            else:
-                                futures.append(executor.submit(extract_features, row_df))
+                            futures.append(executor.submit(
+                                _process_row_with_artifacts, 
+                                row_df, 
+                                target_column,
+                                clean_artifacts,
+                                min_snr,
+                                min_entropy
+                            ))
                         
-                        df_features = pd.concat([f.result() for f in futures], ignore_index=True)
+                        results = [f.result() for f in futures]
+                        df_features = pd.concat([r for r in results if r is not None], ignore_index=True)
                 else:
                     # Sequential feature extraction with progress bar
-                    df_features = pd.DataFrame()
+                    results = []
                     for i in tqdm(range(len(df)), desc="Extracting features"):
                         row_df = df.iloc[i:i+1]
-                        if clean_artifacts:
-                            processed_row = _process_row_with_artifacts(row_df, target_column)
-                        else:
-                            processed_row = extract_features(row_df)
-                        df_features = pd.concat([df_features, processed_row], ignore_index=True)
+                        processed_row = _process_row_with_artifacts(
+                            row_df, 
+                            target_column,
+                            clean_artifacts,
+                            min_snr,
+                            min_entropy
+                        )
+                        if processed_row is not None:
+                            results.append(processed_row)
+                    df_features = pd.concat(results, ignore_index=True)
                 
                 if cache_dir:
                     joblib.dump(df_features, cache_path / 'features.pkl')
@@ -340,6 +361,11 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         
         logger.info(f"Feature extraction complete. Shape: {df_features.shape}")
         metadata['preprocessing_steps'].append('feature_extraction')
+        if len(df_features) < len(df):
+            pruned_count = len(df) - len(df_features)
+            logger.info(f"Pruned {pruned_count} samples due to poor signal quality")
+            metadata['pruned_count'] = pruned_count
+            metadata['preprocessing_steps'].append('signal_quality_pruning')
         
         # Compute signal quality metrics
         numerical_cols = df_features.select_dtypes(include=[np.number]).columns
@@ -468,13 +494,34 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
     except Exception as e:
         raise PreprocessingError(f"Error in preprocessing pipeline: {str(e)}")
 
-def _process_row_with_artifacts(row_df: pd.DataFrame, target_column: str) -> pd.DataFrame:
-    """Helper function for processing a single row with artifact cleaning"""
-    for col in row_df.columns:
-        if col != target_column:
-            signal = np.array(row_df[col])
-            if len(signal) > 10:
-                cleaned_signal, _ = clean_eeg(signal.reshape(1, -1))
-                cleaned_signal = apply_eeg_preprocessing(cleaned_signal[0])
-                row_df[col] = cleaned_signal
-    return extract_features(row_df)
+def _process_row_with_artifacts(
+    row_df: pd.DataFrame, 
+    target_column: str,
+    clean_artifacts: bool = True,
+    min_snr: Optional[float] = None,
+    min_entropy: Optional[float] = None
+) -> Optional[pd.DataFrame]:
+    """Helper function for processing a single row with quality pruning and cleaning"""
+    try:
+        for col in row_df.columns:
+            if col != target_column:
+                signal = np.array(row_df[col])
+                if len(signal) > 10:
+                    # Check signal quality before cleaning
+                    metrics = compute_signal_quality_metrics(signal)
+                    if min_snr is not None and metrics['snr'] < min_snr:
+                        return None
+                    if min_entropy is not None and metrics['entropy'] < min_entropy:
+                        return None
+                        
+                    if clean_artifacts:
+                        cleaned_signal, _ = clean_eeg(signal.reshape(1, -1))
+                        cleaned_signal = apply_eeg_preprocessing(cleaned_signal[0])
+                        row_df[col] = [cleaned_signal] # Maintain list format for DataFrame
+                else:
+                    return None # Signal too short
+        
+        return extract_features(row_df)
+    except Exception as e:
+        logger.warning(f"Error processing row: {str(e)}")
+        return None
