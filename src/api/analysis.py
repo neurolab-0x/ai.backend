@@ -18,7 +18,7 @@ async def process_uploaded_file(
     file: Optional[UploadFile] = File(None),
     json_data: Optional[Dict] = Body(None),
     encrypt_response: bool = Query(False, description="Whether to encrypt the response"),
-    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis")
+    model_type: str = Query(..., description="Architecture to use for analysis (required)")
 ):
     """Process uploaded EEG file or JSON data"""
     try:
@@ -42,7 +42,7 @@ async def process_uploaded_file(
 @router.post('/analyze', summary="Analyze EEG data", response_description="Analysis results")
 async def analyze_eeg_data(
     data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
-    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis"),
+    model_type: str = Query(..., description="Architecture to use for analysis (required)"),
     background_tasks: BackgroundTasks = None
 ):
     """Analyze EEG data and return results"""
@@ -62,7 +62,7 @@ async def analyze_eeg_data(
 async def generate_detailed_report(
     data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
     save_report: bool = Query(False, description="Whether to save the report to a file"),
-    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis")
+    model_type: str = Query(..., description="Architecture to use for analysis (required)")
 ):
     """Generate a detailed analysis report with comprehensive recommendations"""
     try:

@@ -24,17 +24,18 @@ class MLProcessor:
     Handles model loading, data preprocessing, predictions, and recommendations.
     """
     
-    def __init__(self, default_model: str = "enhanced_cnn_lstm"):
+    def __init__(self, default_model: Optional[str] = None):
         """
         Initialize ML Processor.
         
         Args:
-            default_model: Name of the default architecture (e.g. 'enhanced_cnn_lstm')
+            default_model: Name of the default architecture (optional)
         """
         self.default_model = default_model
         self.models = {}  # Model cache: {model_type: model_object}
         self.recommendation_engine = NLPRecommendationEngine()
-        self._get_or_load_model(default_model)
+        if default_model:
+            self._get_or_load_model(default_model)
         logger.info("ML Processor initialized")
     
     def _get_or_load_model(self, model_type: str):
@@ -81,6 +82,8 @@ class MLProcessor:
         """
         try:
             model_type = model_type or self.default_model
+            if not model_type:
+                raise ValueError("model_type must be specified")
             logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
             # Step 1: Load and preprocess data

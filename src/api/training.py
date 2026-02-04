@@ -28,7 +28,7 @@ training_jobs = {}
 
 class TrainingConfig(BaseModel):
     """Configuration for model training"""
-    model_type: str = Field(default='enhanced_cnn_lstm', description="Type of model to train")
+    model_type: str = Field(..., description="Type of model to train (required)")
     epochs: int = Field(default=30, ge=1, le=200, description="Number of training epochs")
     batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for training")
     learning_rate: float = Field(default=0.001, gt=0, lt=1, description="Learning rate")
@@ -165,8 +165,8 @@ async def train_model_background(
 @router.post("/train", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def train_model(
     data: TrainingData,
-    model_type: str,
     background_tasks: BackgroundTasks,
+    model_type: str = Query(..., description="Architecture to use for training (required)"),
     # current_user: Dict = Depends(require_admin_role)
 ):
     """
@@ -225,7 +225,7 @@ async def train_model(
 @router.post("/file", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def train_model_from_file(
     file: UploadFile = File(...),
-    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for training"),
+    model_type: str = Query(..., description="Architecture to use for training (required)"),
     config: Optional[str] = None,
     background_tasks: BackgroundTasks = None,
     #current_user: Dict = Depends(require_admin_role)
