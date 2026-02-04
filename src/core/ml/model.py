@@ -189,6 +189,9 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model
 
+# Alias for backward compatibility
+create_model = build_model
+
 def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwargs):
     """Enhanced hybrid model training with improved architectures."""
     batch_size = kwargs.get('batch_size', 32)

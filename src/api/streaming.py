@@ -85,8 +85,6 @@ class StreamingResponse(BaseModel):
 async def stream_eeg_data(
     request: Request, 
     data: EEGData,
-    request: Request, 
-    data: EEGData,
     current_user: Dict = None,
     client_id: Optional[str] = None
 ):
