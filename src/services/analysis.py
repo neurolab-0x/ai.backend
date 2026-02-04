@@ -24,7 +24,7 @@ class MLProcessor:
     Handles model loading, data preprocessing, predictions, and recommendations.
     """
     
-    def __init__(self, model_path: str = "./model/trained_model.h5"):
+    def __init__(self, model_path: str = "model/enhanced_cnn_lstm.h5"):
         """
         Initialize ML Processor with model path.
         

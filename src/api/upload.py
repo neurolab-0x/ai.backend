@@ -7,7 +7,7 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.preprocess import preprocess_data
 from src.core.ml.model import load_calibrated_model
 
-def process_uploaded_file(uploaded_file: UploadFile):
+def process_uploaded_file(uploaded_file: UploadFile, model_type: str = "enhanced_cnn_lstm"):
     """Handles uploaded EEG file, processes it, and runs model inference."""
     file_location = f"temp/{uploaded_file.filename}"
     os.makedirs("temp", exist_ok=True)
@@ -29,7 +29,7 @@ def process_uploaded_file(uploaded_file: UploadFile):
     X, _, _, _, metadata = preprocess_data(features_df)
 
     # Load trained model
-    model_path = "./data/processed/trained_model.h5"
+    model_path = f"model/{model_type}.h5"
     model = load_calibrated_model(model_path)
 
     # Predict mental state

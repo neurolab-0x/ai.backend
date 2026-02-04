@@ -203,7 +203,21 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     input_shape = (X_train.shape[1], 1)
     num_classes = len(np.unique(y_train))
     
-    model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes, **kwargs)
+    model_path = os.path.join("model", f"{model_type}.h5")
+    
+    # Try to load existing model for continuous training
+    if os.path.exists(model_path):
+        logger.info(f"Loading existing {model_type} model for continuous training...")
+        try:
+            model = tf.keras.models.load_model(model_path)
+            model.compile(optimizer=Adam(learning_rate=kwargs.get('learning_rate', 0.001)), 
+                         loss='sparse_categorical_crossentropy', 
+                         metrics=['accuracy'])
+        except Exception as e:
+            logger.warning(f"Could not load existing model: {e}. Building new model.")
+            model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes, **kwargs)
+    else:
+        model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes, **kwargs)
     
     class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
     class_weight_dict = dict(enumerate(class_weights))
@@ -211,7 +225,7 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     callbacks = [
         LearningRateScheduler(cosine_annealing_schedule),
         EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-        ModelCheckpoint(f'best_model_{model_type}.h5', monitor='val_loss', save_best_only=True),
+        ModelCheckpoint(os.path.join("model", f"best_{model_type}.h5"), monitor='val_loss', save_best_only=True),
         TensorBoard(log_dir=f'./logs/{model_type}')
     ]
     
@@ -225,7 +239,6 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         verbose=1
     )
     
-    model_path = f"./processed/trained_model_{model_type}.h5"
     save_model(model, model_path)
     return model, history
 
@@ -242,9 +255,15 @@ def save_model(model: tf.keras.Model, model_path: str) -> None:
 def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
     """Load a trained model, fallback to a base model if not found."""
     try:
+        # standardizing path if only architecture name is provided
+        if not model_path.endswith('.h5'):
+            model_path = os.path.join("model", f"{model_path}.h5")
+        
         if not os.path.exists(model_path):
             logger.warning(f"Model file not found at {model_path}. Creating base model.")
-            return build_model('enhanced_cnn_lstm')
+            # Default architecture if not specified in path
+            arch = os.path.basename(model_path).replace('.h5', '') if '.h5' in model_path else 'enhanced_cnn_lstm'
+            return build_model(arch)
         model = tf.keras.models.load_model(model_path)
         logger.info(f"Model loaded successfully from {model_path}")
         return model

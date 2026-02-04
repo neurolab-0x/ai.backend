@@ -313,7 +313,17 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                     logger.warning(warning)
         
         # Extract features if needed
-        if 'eeg_state' in df.columns and len(df.columns) < 10:
+        is_raw_data = False
+        if target_column in df.columns and len(df.columns) < 10:
+            # Check if columns contain actual signals (arrays/lists) or just scalars
+            for col in df.columns:
+                if col != target_column:
+                    first_val = df[col].iloc[0]
+                    if isinstance(first_val, (np.ndarray, list)) or (hasattr(first_val, 'len') and len(first_val) > 1):
+                        is_raw_data = True
+                        break
+        
+        if is_raw_data:
             logger.info("Extracting features from raw data...")
             
             if cache_dir and (cache_path / 'features.pkl').exists():
@@ -335,8 +345,10 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                                 min_entropy
                             ))
                         
-                        results = [f.result() for f in futures]
-                        df_features = pd.concat([r for r in results if r is not None], ignore_index=True)
+                        results = [f.result() for f in futures if f.result() is not None]
+                        if not results:
+                            raise PreprocessingError("No valid features extracted from data")
+                        df_features = pd.concat(results, ignore_index=True)
                 else:
                     # Sequential feature extraction with progress bar
                     results = []
@@ -351,6 +363,9 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                         )
                         if processed_row is not None:
                             results.append(processed_row)
+                    
+                    if not results:
+                        raise PreprocessingError("No valid features extracted from data")
                     df_features = pd.concat(results, ignore_index=True)
                 
                 if cache_dir:
