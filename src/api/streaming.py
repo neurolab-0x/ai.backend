@@ -151,7 +151,7 @@ async def stream_eeg_data(
         if data.include_interpretability:
             try:
                 # Load the model used for predictions
-                from src.utils.loading import load_calibrated_model
+                from src.core.ml.model import load_calibrated_model
                 from main import MODEL_PATH  # Import model path from main
                 
                 model = load_calibrated_model(model_path or MODEL_PATH)

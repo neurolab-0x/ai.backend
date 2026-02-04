@@ -94,6 +94,8 @@ def calibrate_model(model: tf.keras.Model, calibration_data: np.ndarray) -> tf.k
 def save_model(model: tf.keras.Model, model_path: str) -> None:
     """Save model to disk"""
     try:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
         model.save(model_path)
         logger.info(f"Model saved successfully to {model_path}")
     except Exception as e:
