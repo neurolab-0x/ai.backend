@@ -4,11 +4,13 @@ Contains data models and schemas used for data exchange.
 """
 
 from .eeg import EEGDataPoint, EEGSession, EEGFeatures
-from .events import EEGEvent
+from .events import EEGEvent, EventType, EventSeverity
 
 __all__ = [
     'EEGDataPoint',
     'EEGSession',
     'EEGFeatures',
-    'EEGEvent'
+    'EEGEvent',
+    'EventType',
+    'EventSeverity'
 ]

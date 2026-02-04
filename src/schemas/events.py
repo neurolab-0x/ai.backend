@@ -19,7 +19,7 @@ class EventType(Enum):
     SIGNAL_QUALITY = "signal_quality"
 
 @dataclass
-class DetectedEvent:
+class EEGEvent:
     """Class representing a detected neurological event"""
     event_type: EventType
     confidence: float
@@ -32,8 +32,8 @@ class DetectedEvent:
     metadata: Dict[str, Any]
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DetectedEvent':
-        """Create DetectedEvent from a dictionary"""
+    def from_dict(cls, data: Dict[str, Any]) -> 'EEGEvent':
+        """Create EEGEvent from a dictionary"""
         return cls(
             event_type=EventType(data['event_type']),
             confidence=data['confidence'],
