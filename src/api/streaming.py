@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Union
 import base64
 
 from src.api.realtime import process_realtime_data
-from src.utils.interpretability import ModelInterpretability
+from src.core.ml.interpretability import ModelInterpretability
 from src.config.settings import REAL_TIME_CONFIG, SECURITY_CONFIG
 
 logger = logging.getLogger(__name__)

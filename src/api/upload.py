@@ -5,7 +5,7 @@ from src.preprocessing.features import extract_features
 from src.preprocessing.labeling import label_eeg_states
 from src.preprocessing.load_data import load_data
 from src.preprocessing.preprocess import preprocess_data
-from src.models.load_trained_model import load_trained_model
+from src.core.ml.model import load_calibrated_model
 
 def process_uploaded_file(uploaded_file: UploadFile):
     """Handles uploaded EEG file, processes it, and runs model inference."""
@@ -30,7 +30,7 @@ def process_uploaded_file(uploaded_file: UploadFile):
 
     # Load trained model
     model_path = "./data/processed/trained_model.h5"
-    model = load_trained_model(model_path)
+    model = load_calibrated_model(model_path)
 
     # Predict mental state
     predictions = model.predict(X.reshape(-1, X.shape[1], 1))
