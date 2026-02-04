@@ -15,8 +15,11 @@ if [ -f "./venv/bin/python" ]; then
     PYTHON_BIN="./venv/bin/python"
 elif command -v python3 &> /dev/null; then
     PYTHON_BIN="python3"
-else
+elif command -v python &> /dev/null; then
     PYTHON_BIN="python"
+else
+    echo "[-] Error: Python not found. Please install Python 3."
+    exit 1
 fi
 
 echo "=========================================="
