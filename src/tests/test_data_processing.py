@@ -4,8 +4,7 @@ import json
 import numpy as np
 from datetime import datetime
 import pandas as pd
-from src.utils.data_handler import DataHandler, EEGDataPoint
-from src.utils.explanation_generator import ExplanationGenerator, EEGState
+from src.services.data_service import DataHandler, EEGDataPoint
 
 class TestDataProcessing(unittest.TestCase):
     def setUp(self):

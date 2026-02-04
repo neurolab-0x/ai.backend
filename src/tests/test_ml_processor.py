@@ -5,7 +5,7 @@ import pytest
 import numpy as np
 import pandas as pd
 import os
-from src.utils.ml_processor import MLProcessor
+from src.services.analysis import MLProcessor
 
 # Configuration
 TEST_MODEL_PATH = "model/trained_model.h5"
