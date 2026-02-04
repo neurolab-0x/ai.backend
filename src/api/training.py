@@ -6,7 +6,7 @@ import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, status, UploadFile, File, Query
 from pydantic import BaseModel, Field, validator
 import numpy as np
 import pandas as pd
@@ -98,7 +98,8 @@ async def train_model_background(
     y_train: np.ndarray,
     X_test: Optional[np.ndarray],
     y_test: Optional[np.ndarray],
-    config: TrainingConfig
+    config: TrainingConfig,
+    model_type : str
 ):
     """Background task for model training"""
     try:
@@ -109,7 +110,7 @@ async def train_model_background(
         # Train model
         model, history = train_hybrid_model(
             X_train, y_train,
-            model_type=config.model_type,
+            model_type=model_type,
             epochs=config.epochs,
             batch_size=config.batch_size,
             learning_rate=config.learning_rate,
@@ -164,6 +165,7 @@ async def train_model_background(
 @router.post("/train", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def train_model(
     data: TrainingData,
+    model_type: str,
     background_tasks: BackgroundTasks,
     # current_user: Dict = Depends(require_admin_role)
 ):
@@ -200,7 +202,7 @@ async def train_model(
         # Start background training
         background_tasks.add_task(
             train_model_background,
-            job_id, X_train, y_train, X_test, y_test, data.config
+            job_id, X_train, y_train, X_test, y_test, data.config, model_type
         )
         
         logger.info(f"Training job {job_id} queued by testing user")
@@ -223,6 +225,7 @@ async def train_model(
 @router.post("/file", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def train_model_from_file(
     file: UploadFile = File(...),
+    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for training"),
     config: Optional[str] = None,
     background_tasks: BackgroundTasks = None,
     #current_user: Dict = Depends(require_admin_role)
@@ -267,13 +270,14 @@ async def train_model_from_file(
             'error': None,
             'user': 'test_user',
             'config': training_config.dict(),
-            'file': file.filename
+            'file': file.filename,
+            'model_type': model_type
         }
         
         # Start background training
         background_tasks.add_task(
             train_model_background,
-            job_id, X_train, y_train, X_test, y_test, training_config
+            job_id, X_train, y_train, X_test, y_test, training_config, model_type
         )
         
         # Clean up uploaded file

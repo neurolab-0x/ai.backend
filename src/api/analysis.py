@@ -17,16 +17,17 @@ ml_processor = MLProcessor()
 async def process_uploaded_file(
     file: Optional[UploadFile] = File(None),
     json_data: Optional[Dict] = Body(None),
-    encrypt_response: bool = Query(False, description="Whether to encrypt the response")
+    encrypt_response: bool = Query(False, description="Whether to encrypt the response"),
+    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis")
 ):
     """Process uploaded EEG file or JSON data"""
     try:
         if file:
             validate_file(file)
             file_location = await save_uploaded_file(file)
-            result = ml_processor.process_eeg_data(file_location, "anonymous", "session_1")
+            result = ml_processor.process_eeg_data(file_location, "anonymous", "session_1", model_type=model_type)
         elif json_data:
-            result = ml_processor.process_eeg_data(json_data, "anonymous", "session_1")
+            result = ml_processor.process_eeg_data(json_data, "anonymous", "session_1", model_type=model_type)
         else:
             raise HTTPException(status_code=400, detail="No file or data provided")
             
@@ -41,6 +42,7 @@ async def process_uploaded_file(
 @router.post('/analyze', summary="Analyze EEG data", response_description="Analysis results")
 async def analyze_eeg_data(
     data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
+    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis"),
     background_tasks: BackgroundTasks = None
 ):
     """Analyze EEG data and return results"""
@@ -48,7 +50,8 @@ async def analyze_eeg_data(
         result = ml_processor.process_eeg_data(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
-            session_id=data.get('session_id', 'session_1')
+            session_id=data.get('session_id', 'session_1'),
+            model_type=model_type
         )
         return result
     except Exception as e:
@@ -58,7 +61,8 @@ async def analyze_eeg_data(
 @router.post('/detailed-report', summary="Generate detailed analysis report", response_description="Comprehensive report with recommendations")
 async def generate_detailed_report(
     data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
-    save_report: bool = Query(False, description="Whether to save the report to a file")
+    save_report: bool = Query(False, description="Whether to save the report to a file"),
+    model_type: str = Query("enhanced_cnn_lstm", description="Architecture to use for analysis")
 ):
     """Generate a detailed analysis report with comprehensive recommendations"""
     try:
@@ -66,7 +70,8 @@ async def generate_detailed_report(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
             session_id=data.get('session_id', 'session_1'),
-            save_report=save_report
+            save_report=save_report,
+            model_type=model_type
         )
         return report
     except Exception as e:

@@ -24,68 +24,71 @@ class MLProcessor:
     Handles model loading, data preprocessing, predictions, and recommendations.
     """
     
-    def __init__(self, model_path: str = "model/enhanced_cnn_lstm.h5"):
+    def __init__(self, default_model: str = "enhanced_cnn_lstm"):
         """
-        Initialize ML Processor with model path.
+        Initialize ML Processor.
         
         Args:
-            model_path: Path to the trained model file
+            default_model: Name of the default architecture (e.g. 'enhanced_cnn_lstm')
         """
-        self.model_path = model_path
-        self.model = None
-        self.model_loaded = False
+        self.default_model = default_model
+        self.models = {}  # Model cache: {model_type: model_object}
         self.recommendation_engine = NLPRecommendationEngine()
-        self._load_model()
+        self._get_or_load_model(default_model)
         logger.info("ML Processor initialized")
     
-    def _load_model(self):
-        """Load the trained model"""
-        try:
-            if os.path.exists(self.model_path):
-                self.model = load_calibrated_model(self.model_path)
-                if self.model is not None:
-                    self.model_loaded = True
-                    # Warm up the model
-                    dummy_input = np.zeros((1, 5, 1))
-                    _ = self.model.predict(dummy_input, verbose=0)
-                    logger.info(f"Model loaded successfully from {self.model_path}")
+    def _get_or_load_model(self, model_type: str):
+        """Get model from cache or load it if not available"""
+        if model_type not in self.models:
+            model_path = f"model/{model_type}.h5"
+            try:
+                if os.path.exists(model_path):
+                    model = load_calibrated_model(model_path)
+                    if model is not None:
+                        # Warm up the model
+                        dummy_input = np.zeros((1, 5, 1))
+                        _ = model.predict(dummy_input, verbose=0)
+                        self.models[model_type] = model
+                        logger.info(f"Model {model_type} loaded successfully from {model_path}")
+                    else:
+                        logger.warning(f"Model loading returned None for {model_type}")
                 else:
-                    logger.warning("Model loading returned None")
-            else:
-                logger.warning(f"Model file not found at {self.model_path}")
-        except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            self.model_loaded = False
+                    logger.warning(f"Model file not found at {model_path}. Trying fallback.")
+                    self.models[model_type] = load_calibrated_model(model_type)
+            except Exception as e:
+                logger.error(f"Error loading model {model_type}: {str(e)}")
+                return None
+        return self.models.get(model_type)
 
     def process_eeg_data(
         self, 
         data: Union[str, Dict, np.ndarray, pd.DataFrame], 
         subject_id: str = "anonymous", 
-        session_id: str = "default_session"
+        session_id: str = "default_session",
+        model_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process EEG data through the complete pipeline.
         
         Args:
-            data: Can be:
-                - str: File path to CSV/EDF/BDF file
-                - Dict: Dictionary with EEG features (alpha, beta, theta, delta, gamma)
-                - np.ndarray: Numpy array of EEG features
-                - pd.DataFrame: DataFrame with EEG features
+            data: EEG data
             subject_id: Unique identifier for the subject
             session_id: Unique identifier for the session
+            model_type: Architecture to use for inference
             
         Returns:
             Dict containing predictions, states, durations, and recommendations
         """
         try:
-            logger.info(f"Processing EEG data for subject {subject_id}, session {session_id}")
+            model_type = model_type or self.default_model
+            logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
             # Step 1: Load and preprocess data
             processed_features = self._preprocess_input(data)
             
-            # Step 2: Make predictions using the model
-            predictions = self._make_predictions(processed_features)
+            # Step 2: Make predictions using the specified model
+            model = self._get_or_load_model(model_type)
+            predictions = self._make_predictions(processed_features, model=model)
             
             # Step 3: Apply temporal smoothing
             smoothed_states = temporal_smoothing(
@@ -134,8 +137,7 @@ class MLProcessor:
                     'subject_id': subject_id,
                     'session_id': session_id,
                     'timestamp': datetime.now().isoformat(),
-                    'model_path': self.model_path,
-                    'model_loaded': self.model_loaded
+                    'model_type': model_type
                 }
             }
             
@@ -226,26 +228,27 @@ class MLProcessor:
         normalized = (features - mean) / (std + 1e-10)
         return normalized
 
-    def _make_predictions(self, features: np.ndarray) -> Dict[str, Any]:
+    def _make_predictions(self, features: np.ndarray, model=None) -> Dict[str, Any]:
         """
-        Make predictions using the loaded model.
+        Make predictions using the provided model.
         
         Args:
             features: Preprocessed feature array of shape (n_samples, 5)
+            model: Model instance to use for inference
             
         Returns:
             Dictionary containing predictions and confidence scores
         """
         try:
-            if not self.model_loaded or self.model is None:
-                logger.warning("Model not loaded, using rule-based classification")
+            if model is None:
+                logger.warning("No model provided, using rule-based classification")
                 return self._rule_based_classification(features)
             
             # Reshape for model input (n_samples, 5, 1)
             features_reshaped = features.reshape(-1, 5, 1)
             
             # Make predictions
-            predictions = self.model.predict(features_reshaped, verbose=0)
+            predictions = model.predict(features_reshaped, verbose=0)
             
             # Get predicted classes
             predicted_classes = np.argmax(predictions, axis=1)
@@ -405,7 +408,8 @@ class MLProcessor:
         data: Union[str, Dict, np.ndarray, pd.DataFrame],
         subject_id: str = "anonymous",
         session_id: str = "default_session",
-        save_report: bool = False
+        save_report: bool = False,
+        model_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate a detailed report with comprehensive recommendations.
@@ -415,13 +419,14 @@ class MLProcessor:
             subject_id: Subject identifier
             session_id: Session identifier
             save_report: Whether to save the report to a file
+            model_type: Architecture to use for analysis
             
         Returns:
             Detailed report dictionary
         """
         try:
             # Process the data first
-            result = self.process_eeg_data(data, subject_id, session_id)
+            result = self.process_eeg_data(data, subject_id, session_id, model_type=model_type)
             
             # Generate detailed report using NLP engine
             detailed_report = self.recommendation_engine.generate_detailed_report(
