@@ -25,7 +25,7 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.features import extract_features
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.labeling import label_eeg_states
-from src.core.ml.model import build_model, train_hybrid_model, evaluate_model, ModelInterpretability
+from src.core.ml.model import build_model, train_hybrid_model, evaluate_model
 
 def setup_logging(log_file: str = 'training_improved.log'):
     logging.basicConfig(
