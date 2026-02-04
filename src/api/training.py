@@ -354,20 +354,15 @@ async def list_training_jobs(
     limit: int = 10
 ):
     """
-    List training jobs for the current user.
-    Admins can see all jobs.
+    List training jobs.
+    Returns all jobs (authentication disabled).
     """
-    is_admin = 'admin' in current_user.get('roles', [])
-    
-    # Filter jobs based on user permissions
-    user_jobs = []
-    for job_id, job in training_jobs.items():
-        if is_admin or job['user'] == current_user['sub']:
-            user_jobs.append(TrainingStatus(**job))
+    # Return all jobs since authentication is currently disabled
+    all_jobs = [TrainingStatus(**job) for job in training_jobs.values()]
     
     # Sort by started_at (most recent first) and limit
-    user_jobs.sort(key=lambda x: x.started_at, reverse=True)
-    return user_jobs[:limit]
+    all_jobs.sort(key=lambda x: x.started_at, reverse=True)
+    return all_jobs[:limit]
 
 
 @router.delete("/job/{job_id}")
@@ -398,13 +393,13 @@ async def compare_models(
     # current_user: Dict = Depends(require_admin_role)
 ):
     """
-    Compare multiple model architectures (Admin only).
-    
+    Compare multiple model architectures.
     Trains and evaluates all available model types and returns comparison metrics.
+    (Authentication disabled)
     """
     try:
         # Generate job ID
-        job_id = f"compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{current_user['sub']}"
+        job_id = f"compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
@@ -428,7 +423,7 @@ async def compare_models(
             'completed_at': None,
             'metrics': None,
             'error': None,
-            'user': current_user['sub'],
+            'user': 'anonymous',
             'type': 'comparison'
         }
         
@@ -459,7 +454,7 @@ async def compare_models(
         
         background_tasks.add_task(compare_models_background)
         
-        logger.info(f"Model comparison job {job_id} queued by user {current_user['sub']}")
+        logger.info(f"Model comparison job {job_id} queued")
         
         return TrainingResponse(
             job_id=job_id,

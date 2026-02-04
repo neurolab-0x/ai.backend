@@ -326,14 +326,42 @@ def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3):
     model_types = ['original', 'enhanced_cnn_lstm', 'resnet_lstm', 'transformer']
     results = {}
     
+    # Determine input shape from data
+    if len(X_train.shape) == 2:
+        X_train = X_train.reshape(-1, X_train.shape[1], 1)
+        X_test = X_test.reshape(-1, X_test.shape[1], 1)
+    
+    input_shape = (X_train.shape[1], X_train.shape[2])
+    num_classes = len(np.unique(y_train))
+    
     for model_type in model_types:
+        logger.info(f"Comparing {model_type} model...")
         accuracies = []
         for i in range(n_repeats):
-            model, _ = train_hybrid_model(X_train, y_train, model_type=model_type)
+            # Build fresh model for comparison (don't load existing)
+            model = build_model(
+                model_type=model_type,
+                input_shape=input_shape,
+                num_classes=num_classes
+            )
+            
+            # Train the model
+            model.fit(
+                X_train, y_train,
+                epochs=30,
+                batch_size=32,
+                validation_split=0.2,
+                verbose=0
+            )
+            
+            # Evaluate
             metrics = evaluate_model(model, X_test, y_test)
             accuracies.append(metrics['accuracy'])
+            
         results[model_type] = {
             'mean_accuracy': float(np.mean(accuracies)),
             'std_accuracy': float(np.std(accuracies))
         }
+        logger.info(f"{model_type}: {results[model_type]['mean_accuracy']:.4f} ± {results[model_type]['std_accuracy']:.4f}")
+        
     return results
