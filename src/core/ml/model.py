@@ -225,7 +225,7 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     callbacks = [
         LearningRateScheduler(cosine_annealing_schedule),
         EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-        ModelCheckpoint(os.path.join("model", f"best_{model_type}.h5"), monitor='val_loss', save_best_only=True),
+        ModelCheckpoint(model_path, monitor='val_loss', save_best_only=True),
         TensorBoard(log_dir=f'./logs/{model_type}')
     ]
     

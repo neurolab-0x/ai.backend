@@ -40,6 +40,8 @@ class TrainingConfig(BaseModel):
     subject_id: Optional[str] = Field(None, description="Subject ID for personalized training")
     session_id: Optional[str] = Field(None, description="Session ID")
     validation_mode: str = Field(default='split', description="Validation mode: 'split', 'kfold', or 'loso'")
+    overlap: float = Field(default=0.5, ge=0.0, le=0.9, description="Overlap between epochs (0.0 to 0.9)")
+    simple_mode: bool = Field(default=True, description="Whether to use simplified feature extraction")
     
     @validator('model_type')
     def validate_model_type(cls, v):
@@ -55,7 +57,7 @@ class TrainingData(BaseModel):
     y_train: List[int] = Field(..., description="Training labels")
     X_test: Optional[List[List[float]]] = Field(None, description="Test features (optional)")
     y_test: Optional[List[int]] = Field(None, description="Test labels (optional)")
-    config: Optional[TrainingConfig] = Field(default_factory=TrainingConfig, description="Training configuration")
+    config: Optional[TrainingConfig] = Field(None, description="Training configuration")
     
     @validator('X_train')
     def validate_X_train(cls, v):
@@ -120,7 +122,9 @@ async def train_model_background(
             l1_reg=config.l1_reg,
             l2_reg=config.l2_reg,
             subject_id=config.subject_id,
-            session_id=config.session_id
+            session_id=config.session_id,
+            overlap=config.overlap,
+            simple_mode=config.simple_mode
         )
         
         # Performance check
@@ -185,6 +189,13 @@ async def train_model(
         X_test = np.array(data.X_test) if data.X_test else None
         y_test = np.array(data.y_test) if data.y_test else None
         
+        # Ensure config is populated and has the correct model_type
+        if data.config is None:
+            data.config = TrainingConfig(model_type=model_type)
+        else:
+            # Sync model_type from query param to config
+            data.config.model_type = model_type
+
         # Initialize job status
         training_jobs[job_id] = {
             'job_id': job_id,
@@ -226,6 +237,8 @@ async def train_model(
 async def train_model_from_file(
     file: UploadFile = File(...),
     model_type: str = Query(..., description="Architecture to use for training (required)"),
+    overlap: float = Query(0.5, ge=0.0, le=0.9, description="Overlap between epochs"),
+    simple_mode: bool = Query(True, description="Whether to use simplified feature extraction"),
     config: Optional[str] = None,
     background_tasks: BackgroundTasks = None,
     #current_user: Dict = Depends(require_admin_role)
@@ -245,15 +258,31 @@ async def train_model_from_file(
         # Load and process data
         df = load_data(file_location)
         df = label_eeg_states(df)
-        features_df = extract_features(df)
-        X_train, X_test, y_train, y_test, metadata = preprocess_data(features_df)
+        
+        # Preprocess data (this will handle feature extraction correctly if provided with raw data)
+        X_train, X_test, y_train, y_test, metadata = preprocess_data(
+            df, 
+            overlap=overlap, 
+            simple_mode=simple_mode
+        )
         
         # Parse config if provided
-        training_config = TrainingConfig()
         if config:
             import json
             config_dict = json.loads(config)
+            if 'model_type' not in config_dict:
+                config_dict['model_type'] = model_type
+            if 'overlap' not in config_dict:
+                config_dict['overlap'] = overlap
+            if 'simple_mode' not in config_dict:
+                config_dict['simple_mode'] = simple_mode
             training_config = TrainingConfig(**config_dict)
+        else:
+            training_config = TrainingConfig(
+                model_type=model_type,
+                overlap=overlap,
+                simple_mode=simple_mode
+            )
         
         # Generate job ID
         job_id = f"train_file_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

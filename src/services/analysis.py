@@ -66,7 +66,9 @@ class MLProcessor:
         data: Union[str, Dict, np.ndarray, pd.DataFrame], 
         subject_id: str = "anonymous", 
         session_id: str = "default_session",
-        model_type: Optional[str] = None
+        model_type: Optional[str] = None,
+        overlap: float = 0.0,
+        simple_mode: bool = True
     ) -> Dict[str, Any]:
         """
         Process EEG data through the complete pipeline.
@@ -87,7 +89,7 @@ class MLProcessor:
             logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
             # Step 1: Load and preprocess data
-            processed_features = self._preprocess_input(data)
+            processed_features = self._preprocess_input(data, overlap=overlap, simple_mode=simple_mode)
             
             # Step 2: Make predictions using the specified model
             model = self._get_or_load_model(model_type)
@@ -151,7 +153,7 @@ class MLProcessor:
             logger.error(f"Error processing EEG data: {str(e)}", exc_info=True)
             raise
 
-    def _preprocess_input(self, data: Union[str, Dict, np.ndarray, pd.DataFrame]) -> np.ndarray:
+    def _preprocess_input(self, data: Union[str, Dict, np.ndarray, pd.DataFrame], overlap: float = 0.0, simple_mode: bool = True) -> np.ndarray:
         """
         Preprocess input data into the format expected by the model.
         
@@ -166,8 +168,8 @@ class MLProcessor:
             if isinstance(data, str):
                 logger.debug(f"Loading data from file: {data}")
                 raw_data = load_data(data)
-                features = extract_features(raw_data)
-                X_normalized, _, _, _, _ = preprocess_data(features)
+                # Pass raw data directly to preprocess_data
+                X_normalized, _, _, _, _ = preprocess_data(raw_data, overlap=overlap, simple_mode=simple_mode)
                 return X_normalized
             
             # Handle dictionary (single sample or batch)

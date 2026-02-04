@@ -253,7 +253,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                    num_features: Optional[int] = None, clean_artifacts: bool = True,
                    use_robust_scaler: bool = False, balance_method: str = 'smote',
                    parallel_processing: bool = True, cache_dir: Optional[str] = None,
-                   n_splits: int = 5, **kwargs) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+                   n_splits: int = 5, overlap: float = 0.0, simple_mode: bool = True, **kwargs) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Enhanced preprocessing pipeline with improved error handling, caching, and cross-validation
     
@@ -333,40 +333,11 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                 if parallel_processing:
                     # Parallel feature extraction with progress bar
                     with ThreadPoolExecutor() as executor:
-                        futures = []
-                        for i in tqdm(range(len(df)), desc="Extracting features"):
-                            row_df = df.iloc[i:i+1]
-                            futures.append(executor.submit(
-                                _process_row_with_artifacts, 
-                                row_df, 
-                                target_column,
-                                clean_artifacts,
-                                min_snr,
-                                min_entropy
-                            ))
-                        
-                        results = [f.result() for f in futures if f.result() is not None]
-                        if not results:
-                            raise PreprocessingError("No valid features extracted from data")
-                        df_features = pd.concat(results, ignore_index=True)
+                        # Extract features from the entire dataset with overlapping windows if raw
+                        df_features = extract_features(df, simple_mode=simple_mode, overlap=overlap)
                 else:
-                    # Sequential feature extraction with progress bar
-                    results = []
-                    for i in tqdm(range(len(df)), desc="Extracting features"):
-                        row_df = df.iloc[i:i+1]
-                        processed_row = _process_row_with_artifacts(
-                            row_df, 
-                            target_column,
-                            clean_artifacts,
-                            min_snr,
-                            min_entropy
-                        )
-                        if processed_row is not None:
-                            results.append(processed_row)
-                    
-                    if not results:
-                        raise PreprocessingError("No valid features extracted from data")
-                    df_features = pd.concat(results, ignore_index=True)
+                    # Sequential feature extraction 
+                    df_features = extract_features(df, simple_mode=simple_mode, overlap=overlap)
                 
                 if cache_dir:
                     joblib.dump(df_features, cache_path / 'features.pkl')
