@@ -6,7 +6,7 @@ import os
 
 # Global switch for database interactions
 # Set to False to disable all database operations (No-op mode)
-ENABLE_DATABASES = os.getenv('ENABLE_DATABASES', 'false').lower() == 'true'
+ENABLE_DATABASES = os.getenv('ENABLE_DATABASES', 'true').lower() == 'true'
 
 # Database Connection Settings (Mocks for development)
 MONGODB_CONFIG = {

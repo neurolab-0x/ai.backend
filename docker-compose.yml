@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # NeuroLab API Service
   neurolab-api:
@@ -10,7 +8,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URL=${MONGODB_URL:-mongodb://mongodb:27017}
       - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-your-token-here}
       - INFLUXDB_ORG=${INFLUXDB_ORG:-neurolab}
@@ -26,7 +23,6 @@ services:
       - ./test_data:/app/test_data
       - ./logs:/app/logs
     depends_on:
-      - mongodb
       - influxdb
       - minio
     networks:
@@ -38,28 +34,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  # MongoDB Service
-  mongodb:
-    image: mongo:7.0
-    container_name: neurolab-mongodb
-    ports:
-      - "27017:27017"
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-admin123}
-      - MONGO_INITDB_DATABASE=neurolab
-    volumes:
-      - mongodb-data:/data/db
-      - mongodb-config:/data/configdb
-    networks:
-      - neurolab-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # InfluxDB Service
   influxdb:
@@ -126,10 +100,6 @@ services:
 
 
 volumes:
-  mongodb-data:
-    driver: local
-  mongodb-config:
-    driver: local
   influxdb-data:
     driver: local
   influxdb-config:
