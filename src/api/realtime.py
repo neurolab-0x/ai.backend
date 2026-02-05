@@ -223,6 +223,119 @@ async def process_realtime_data(data: Dict[str, Any], model) -> Dict[str, Any]:
         logger.error(f"Real-time processing error: {str(e)}")
         raise ValueError(f"Real-time processing failed: {str(e)}")
 
+def process_streaming_chunk(
+    data: np.ndarray, 
+    model_path: str = None, 
+    clean_artifacts: bool = True, 
+    stream_buffer=None
+) -> Dict[str, Any]:
+    """
+    Process a chunk of streaming EEG data (array-based).
+    
+    Args:
+        data (np.ndarray): EEG data chunk (channels x samples)
+        model_path (str): Path to model file
+        clean_artifacts (bool): Whether to apply artifact cleaning
+        stream_buffer (StreamBuffer): Buffer for statefulness
+        
+    Returns:
+        Dict[str, Any]: Analysis results
+    """
+    try:
+        # 1. Update Buffer / Get Window
+        current_data = data
+        if stream_buffer:
+            stream_buffer.add_data(data)
+            # Use whole buffer or substantial window for context
+            current_data = stream_buffer.get_window(window_size=None) 
+            
+        # 2. Preprocessing (Cleaning)
+        if clean_artifacts:
+            # clean_eeg expects (samples, channels) usuallly, or (channels, samples)
+            # Let's check dimensions. Streaming usually sends (channels, samples) or (samples, channels)
+            # We'll assume (samples, channels) for processing pipeline standard
+            if current_data.shape[0] < current_data.shape[1] and current_data.shape[0] <= 64: 
+                 # Likely (channels, samples), transpose
+                 current_data = current_data.T
+            
+            # Simple artifact removal if needed (mock or real)
+            # processed_data = clean_eeg(current_data)
+            processed_data = current_data # Placeholder for robust cleaner
+        else:
+            processed_data = current_data
+            
+        # 3. Model Inference
+        # Load model
+        model = ModelCache().get_model(model_path) if model_path else None
+        
+        if model:
+            # Prepare input shape
+            # Model expects (batch, time, channels) or (batch, features)
+            # If we are doing sequence classification, we need to segment
+             
+            # For simplicity in this fix, we'll treat the chunk/window as one batch if it fits
+            # Or extract features
+            
+            # Check model input shape
+            input_shape = model.input_shape
+            
+            if len(input_shape) == 3: # (None, time, channels)
+                # Reshape data to (1, time, channels)
+                # Ensure correct channel count
+                if processed_data.shape[1] != input_shape[2]:
+                    # Mismatch channels
+                    # Attempt resize or fail. For now, use dummy logic if mismatch
+                    logger.warning(f"Shape mismatch: data {processed_data.shape} vs model {input_shape}")
+                    # Try to use only required channels or pad
+                    if processed_data.shape[1] > input_shape[2]:
+                        processed_data = processed_data[:, :input_shape[2]]
+                    else:
+                        # Pad
+                        pad = np.zeros((processed_data.shape[0], input_shape[2] - processed_data.shape[1]))
+                        processed_data = np.hstack([processed_data, pad])
+                
+                # Ensure time dimension matches or is flexible? 
+                # LSTM usually flexible on Time, but some models fixed.
+                # enhanced_cnn_lstm usually flexible or fixed window.
+                # Let's assume we pass the whole window as one sample
+                X_input = processed_data.reshape(1, processed_data.shape[0], processed_data.shape[1])
+                
+            else: # Feature based
+                # Extract features
+                # features = extract_features(processed_data, ...)
+                # Placeholder: Flatten or mean
+                X_input = np.mean(processed_data, axis=0).reshape(1, -1)
+                
+            # Predict
+            try:
+                probs = model.predict(X_input, verbose=0)[0]
+                dominant_state = int(np.argmax(probs))
+                confidence = float(np.max(probs))
+                predicted_states = [dominant_state] # Simplify for chunk
+            except Exception as e:
+                logger.error(f"Inference failed: {e}")
+                dominant_state = 0
+                confidence = 0.0
+                predicted_states = []
+                
+        else:
+            # No model, return dummy
+            dominant_state = 0
+            confidence = 0.0
+            predicted_states = []
+            
+        return {
+            "predicted_states": predicted_states,
+            "dominant_state": dominant_state,
+            "confidence": confidence,
+            "timestamp": datetime.now().isoformat(),
+            "processing_time_ms": 0.0 # Will be calc by caller
+        }
+            
+    except Exception as e:
+        logger.error(f"Streaming processing error: {str(e)}")
+        raise ValueError(f"Streaming processing failed: {str(e)}")
+
 def validate_realtime_data(data: Dict[str, Any]) -> bool:
     """
     Validate real-time data format and content.

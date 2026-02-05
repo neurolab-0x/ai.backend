@@ -41,57 +41,132 @@ class ModelInterpretability:
     
     def explain_with_lime_batch(self, X: np.ndarray, n_samples: int = 20) -> Dict[str, Any]:
         """Generate LIME explanations for multiple samples and aggregate"""
-        # Flatten for LIME if needed
-        X_flat = X.reshape(X.shape[0], -1) if len(X.shape) > 2 else X
+        import logging
+        logger = logging.getLogger(__name__)
         
-        explainer = lime.lime_tabular.LimeTabularExplainer(
-            X_flat[:n_samples],
-            feature_names=self.feature_names if self.feature_names else [f"feature_{i}" for i in range(X_flat.shape[1])],
-            class_names=[str(i) for i in range(self.model.output_shape[-1])],
-            mode='classification'
-        )
-        
-        # Aggregate importance across multiple samples
-        all_importances = {i: [] for i in range(self.model.output_shape[-1])}
-        
-        for idx in range(min(5, len(X_flat))):  # Sample 5 instances
-            def predict_fn(x):
-                # Reshape back to model input shape
-                x_reshaped = x.reshape(-1, *X.shape[1:])
-                return self.model.predict(x_reshaped, verbose=0)
+        try:
+            # Flatten for LIME if needed
+            X_flat = X.reshape(X.shape[0], -1) if len(X.shape) > 2 else X
+            n_features = X_flat.shape[1]
             
-            explanation = explainer.explain_instance(
-                X_flat[idx],
-                predict_fn,
-                num_features=min(10, X_flat.shape[1])
+            # Create feature names if not set
+            if not self.feature_names or len(self.feature_names) != n_features:
+                feature_names = [f"feature_{i}" for i in range(n_features)]
+            else:
+                feature_names = self.feature_names
+            
+            num_classes = self.model.output_shape[-1]
+            logger.info(f"LIME analysis: {X_flat.shape[0]} samples, {n_features} features, {num_classes} classes")
+            
+            explainer = lime.lime_tabular.LimeTabularExplainer(
+                X_flat[:n_samples],
+                feature_names=feature_names,
+                class_names=[f"class_{i}" for i in range(num_classes)],
+                mode='classification'
             )
             
-            # Extract importance for each class
-            for class_idx in range(self.model.output_shape[-1]):
-                importance_dict = dict(explanation.as_list(label=class_idx))
-                all_importances[class_idx].append(importance_dict)
-        
-        # Average importances across samples
-        averaged_importance = {}
-        for class_idx, importance_list in all_importances.items():
-            # Combine all feature importances
-            combined = {}
-            for imp_dict in importance_list:
-                for feature, value in imp_dict.items():
-                    if feature not in combined:
-                        combined[feature] = []
-                    combined[feature].append(value)
+            # Aggregate importance across multiple samples
+            feature_importance_by_class = {str(i): {fname: [] for fname in feature_names} for i in range(num_classes)}
             
-            # Average
-            averaged_importance[str(class_idx)] = {
-                feature: np.mean(values) for feature, values in combined.items()
+            # Analyze up to 5 samples
+            samples_to_analyze = min(5, len(X_flat))
+            successful_samples = 0
+            
+            for idx in range(samples_to_analyze):
+                def predict_fn(x):
+                    # Reshape back to model input shape
+                    x_reshaped = x.reshape(-1, *X.shape[1:])
+                    return self.model.predict(x_reshaped, verbose=0)
+                
+                try:
+                    # Get the predicted class to focus on
+                    # We need this to know which label to ask LIME for
+                    pred = predict_fn(X_flat[idx:idx+1])
+                    predicted_class = int(np.argmax(pred[0]))
+                    all_labels = list(range(num_classes))
+                    
+                    explanation = explainer.explain_instance(
+                        X_flat[idx],
+                        predict_fn,
+                        num_features=n_features,
+                        num_samples=100,
+                        labels=all_labels  # Explicitly ask for all labels to avoid KeyError
+                    )
+                    
+                    # Only extract importance for the predicted class
+                    # Now safe because we requested all labels
+                    if predicted_class in explanation.available_labels():
+                        exp_list = explanation.as_list(label=predicted_class)
+                        
+                        for feature_desc, importance_val in exp_list:
+                            # Extract feature name
+                            feature_name = feature_desc.split()[0] if ' ' in feature_desc else feature_desc
+                            
+                            # Match to our feature names
+                            if feature_name in feature_names:
+                                feature_importance_by_class[str(predicted_class)][feature_name].append(abs(importance_val))
+                            else:
+                                # Try to find by index
+                                try:
+                                    if feature_name.startswith('feature_'):
+                                        idx_num = int(feature_name.split('_')[1])
+                                        if idx_num < len(feature_names):
+                                            actual_feature = feature_names[idx_num]
+                                            feature_importance_by_class[str(predicted_class)][actual_feature].append(abs(importance_val))
+                                except:
+                                    pass
+                        
+                        successful_samples += 1
+                    else:
+                        logger.warning(f"LIME did not return explanation for predicted class {predicted_class}")
+                
+                except Exception as e:
+                    logger.warning(f"LIME failed for sample {idx}: {type(e).__name__}: {str(e)}")
+                    continue
+                
+                except Exception as e:
+                    logger.warning(f"LIME failed for sample {idx}: {type(e).__name__}: {str(e)}")
+                    continue
+            
+            if successful_samples == 0:
+                logger.error("LIME failed for all samples")
+                return {
+                    "feature_importance": {},
+                    "method": "lime",
+                    "error": "Failed to analyze any samples"
+                }
+            
+            # Average importances across samples
+            averaged_importance = {}
+            for class_idx in range(num_classes):
+                class_key = str(class_idx)
+                averaged_importance[class_key] = {}
+                
+                for feature_name in feature_names:
+                    values = feature_importance_by_class[class_key][feature_name]
+                    if values:
+                        averaged_importance[class_key][feature_name] = float(np.mean(values))
+                    else:
+                        averaged_importance[class_key][feature_name] = 0.0
+            
+            logger.info(f"LIME analysis complete: {successful_samples}/{samples_to_analyze} samples successful")
+            
+            return {
+                "feature_importance": averaged_importance,
+                "method": "lime",
+                "n_samples_analyzed": successful_samples
             }
-        
-        return {
-            "feature_importance": averaged_importance,
-            "method": "lime",
-            "n_samples_analyzed": min(5, len(X_flat))
-        }
+            
+        except Exception as e:
+            logger.error(f"LIME batch analysis failed: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Return empty structure on failure
+            return {
+                "feature_importance": {},
+                "method": "lime",
+                "error": f"{type(e).__name__}: {str(e)}"
+            }
         
     def explain_with_lime(self, X: np.ndarray, sample_idx: int = 0, num_features: int = 10) -> Dict[str, Any]:
         """Generate LIME explanations"""

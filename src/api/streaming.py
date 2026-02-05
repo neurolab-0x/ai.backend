@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Dict, Any, Optional, Union
 import base64
 
-from src.api.realtime import process_realtime_data
+from src.api.realtime import process_realtime_data, process_streaming_chunk, StreamBuffer
 from src.core.ml.interpretability import ModelInterpretability
 from src.config.settings import REAL_TIME_CONFIG, SECURITY_CONFIG
 
@@ -131,7 +131,7 @@ async def stream_eeg_data(
         model_path = f"./model/trained_model.h5" if model_type else None
         
         # Process the data with the optimized pipeline
-        result = process_realtime_data(
+        result = process_streaming_chunk(
             eeg_array, 
             model_path=model_path,
             clean_artifacts=data.clean_artifacts,
