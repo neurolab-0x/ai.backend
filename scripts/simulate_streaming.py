@@ -32,6 +32,10 @@ def simulate_streaming_session(duration_seconds=5, sampling_rate=256, channels=1
     print(f"Chunk size: {chunk_size} samples. Total chunks: {total_chunks}")
     
     start_time = time.time()
+
+    model_type = "enhanced_cnn_lstm"
+
+    model_path = f"model/{model_type}.h5"
     
     for i in range(total_chunks):
         # Generate mock data: (samples, channels) usually, but check endpoint expectation
@@ -41,13 +45,13 @@ def simulate_streaming_session(duration_seconds=5, sampling_rate=256, channels=1
         t = np.linspace(i*0.1, (i+1)*0.1, chunk_size, endpoint=False)
         signal = np.sin(2 * np.pi * 10 * t) # 10Hz alpha
         noise = np.random.normal(0, 0.5, (chunk_size, channels))
-        chunk_data = noise + signal[:, np.newaxis]
+        chunk_data = (noise + signal[:, np.newaxis]).T # (channels, samples)
         
         # Process
         try:
             result = process_streaming_chunk(
                 chunk_data,
-                model_path=None, # No model loaded for simulation, will use dummy logic
+                model_path=model_path, # No model loaded for simulation, will use dummy logic
                 clean_artifacts=False, # Skip cleaning for speed/mock
                 stream_buffer=stream_buffer
             )
@@ -57,7 +61,7 @@ def simulate_streaming_session(duration_seconds=5, sampling_rate=256, channels=1
                 print(f"Chunk {i+1}/{total_chunks}: "
                       f"State={result.get('dominant_state')}, "
                       f"Conf={result.get('confidence'):.2f}, "
-                      f"Buffered={len(stream_buffer.buffer)}")
+                      f"Buffered={stream_buffer.buffer.shape if stream_buffer.buffer is not None else 0}")
         except Exception as e:
             print(f"Error processing chunk {i}: {e}")
             break

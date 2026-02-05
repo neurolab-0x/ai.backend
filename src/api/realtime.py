@@ -3,8 +3,10 @@ import logging
 import time
 from collections import deque
 from threading import Lock
+from datetime import datetime
+import pandas as pd
 from src.preprocessing.preprocess import preprocess_data
-from src.preprocessing.features import extract_features
+from src.preprocessing.features import extract_features, extract_features_from_timeseries
 from src.core.ml.model import load_calibrated_model
 from src.core.processing.temporal import temporal_smoothing
 from src.core.processing.artifacts import clean_eeg
@@ -271,15 +273,33 @@ def process_streaming_chunk(
         if model:
             # Prepare input shape
             # Model expects (batch, time, channels) or (batch, features)
-            # If we are doing sequence classification, we need to segment
-             
-            # For simplicity in this fix, we'll treat the chunk/window as one batch if it fits
-            # Or extract features
             
             # Check model input shape
             input_shape = model.input_shape
             
-            if len(input_shape) == 3: # (None, time, channels)
+            if len(input_shape) == 3 and input_shape[1] == 5 and input_shape[2] == 1:
+                # Feature-based model (e.g., 5 frequency bands)
+                try:
+                    # processed_data is (channels, samples). extract_features expects (samples, channels) df
+                    df = pd.DataFrame(processed_data.T)
+                    df.columns = df.columns.astype(str)
+                    
+                    # Use simple_mode=True to get 5 bands
+                    # Must use extract_features_from_timeseries directly for short chunks
+                    features_df = extract_features_from_timeseries(
+                        df, 
+                        eeg_channels=list(df.columns), 
+                        simple_mode=True
+                    )
+                    
+                    # features_df is (n_epochs, 5). Reshape to (n_epochs, 5, 1)
+                    X_input = features_df.values.reshape(-1, 5, 1)
+                except Exception as e:
+                    logger.error(f"Feature extraction failed in streaming: {e}")
+                    # Fallback or re-raise
+                    raise e
+                    
+            elif len(input_shape) == 3: # (None, time, channels) - RAW DATA MODEL
                 # Reshape data to (1, time, channels)
                 # Ensure correct channel count
                 if processed_data.shape[1] != input_shape[2]:
