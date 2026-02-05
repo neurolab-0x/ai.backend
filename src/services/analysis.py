@@ -34,9 +34,31 @@ class MLProcessor:
         self.default_model = default_model
         self.models = {}  # Model cache: {model_type: model_object}
         self.recommendation_engine = NLPRecommendationEngine()
-        if default_model:
-            self._get_or_load_model(default_model)
-        logger.info("ML Processor initialized")
+        
+        # Load all available models from the model directory
+        self._load_available_models()
+        
+        # Ensure default model is loaded if specified (even if not on disk, it might be built on fly)
+        if default_model and default_model not in self.models:
+             self._get_or_load_model(default_model)
+             
+        logger.info(f"ML Processor initialized with models: {list(self.models.keys())}")
+
+    def _load_available_models(self):
+        """Scan model directory and load all .h5 files"""
+        model_dir = "model"
+        if not os.path.exists(model_dir):
+            logger.warning(f"Model directory '{model_dir}' does not exist")
+            return
+
+        for filename in os.listdir(model_dir):
+            if filename.endswith(".h5") or filename.endswith(".keras"):
+                model_name = os.path.splitext(filename)[0]
+                try:
+                    self._get_or_load_model(model_name)
+                    logger.info(f"Pre-loaded available model: {model_name}")
+                except Exception as e:
+                    logger.error(f"Failed to pre-load model {model_name}: {e}")
     
     def _get_or_load_model(self, model_type: str):
         """Get model from cache or load it if not available"""
@@ -54,7 +76,7 @@ class MLProcessor:
                     else:
                         logger.warning(f"Model loading returned None for {model_type}")
                 else:
-                    logger.warning(f"Model file not found at {model_path}. Trying fallback.")
+                    logger.info(f"Model file not found at {model_path}. Creating base model for {model_type}.")
                     self.models[model_type] = load_calibrated_model(model_type)
             except Exception as e:
                 logger.error(f"Error loading model {model_type}: {str(e)}")

@@ -18,8 +18,8 @@ class DatabaseService:
         if not self.enabled:
             logger.info("Database interactions are globally disabled")
         else:
-            # Even if enabled in config, the implementation is now removed
-            logger.warning("Database service is enabled in config but implementation has been removed.")
+            # Implementation pending or moved to specific services (Storage/Monitor)
+            pass
         
     async def store_eeg_data(self, data: Dict[str, Any], session_id: str) -> None:
         """No-op storage of EEG data"""
