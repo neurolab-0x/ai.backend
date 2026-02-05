@@ -17,6 +17,9 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.labeling import label_eeg_states
 from src.preprocessing.features import extract_features
 from src.preprocessing.preprocess import preprocess_data
+from src.services.storage import MinioStorageService
+from src.services.training_monitor import TrainingMonitor
+
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +111,17 @@ async def train_model_background(
         logger.info(f"Starting training job {job_id}")
         training_jobs[job_id]['status'] = 'training'
         training_jobs[job_id]['progress'] = 0.1
+        
+        # Initialize services
+        storage_service = MinioStorageService()
+        monitor = TrainingMonitor()
+        
+        # Log training start
+        monitor.log_training_event(job_id, "STARTED", {
+            "model_type": model_type,
+            "epochs": config.epochs,
+            "subject_id": config.subject_id or "global"
+        })
         
         # Train model
         model, history = train_hybrid_model(
@@ -202,8 +216,31 @@ async def train_model_background(
         
         logger.info(f"Training job {job_id} completed successfully")
         
+        # Save model to disk first (temp)
+        temp_model_path = f"processed/model_{job_id}.h5"
+        model.save(temp_model_path)
+        
+        # Upload to MinIO
+        if storage_service.enabled:
+            monitor.log_training_event(job_id, "UPLOADING_MODEL")
+            object_name = storage_service.upload_file(temp_model_path, 'models', f"{job_id}/model.h5")
+            if object_name:
+                training_jobs[job_id]['model_url'] = storage_service.get_file_url('models', f"{job_id}/model.h5")
+                
+        # Log completion metrics
+        monitor.log_training_event(job_id, "COMPLETED", {
+             "final_accuracy": float(history.history['accuracy'][-1]),
+             "final_loss": float(history.history['loss'][-1])
+        })
+        
+        # Cleanup temp file if needed, or keep as local cache
+        # os.remove(temp_model_path) 
+        
     except Exception as e:
         logger.error(f"Training job {job_id} failed: {str(e)}")
+        # Log failure
+        monitor = TrainingMonitor() # Re-init just in case
+        monitor.log_training_event(job_id, "FAILED", {"error": str(e)})
         training_jobs[job_id]['status'] = 'failed'
         training_jobs[job_id]['error'] = str(e)
         training_jobs[job_id]['completed_at'] = datetime.now().isoformat()

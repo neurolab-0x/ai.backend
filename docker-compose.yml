@@ -15,15 +15,20 @@ services:
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-your-token-here}
       - INFLUXDB_ORG=${INFLUXDB_ORG:-neurolab}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-eeg_data}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/app/data
       - ./model:/app/processed
       - ./logs:/app/logs
       - ./test_data:/app/test_data
+      - ./logs:/app/logs
     depends_on:
       - mongodb
       - influxdb
+      - minio
     networks:
       - neurolab-network
     restart: unless-stopped
@@ -97,6 +102,29 @@ services:
       - neurolab-network
     restart: unless-stopped
 
+  # MinIO Object Storage
+  minio:
+    image: minio/minio:RELEASE.2024-01-31T20-20-33Z
+    container_name: neurolab-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - neurolab-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+
 volumes:
   mongodb-data:
     driver: local
@@ -105,6 +133,8 @@ volumes:
   influxdb-data:
     driver: local
   influxdb-config:
+    driver: local
+  minio-data:
     driver: local
 
 networks:
