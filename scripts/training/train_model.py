@@ -80,14 +80,42 @@ class ImprovedModelTrainer:
         input_shape = (X_train.shape[1], X_train.shape[2]) if len(X_train.shape) > 2 else (X_train.shape[1], 1)
         num_classes = len(np.unique(y_train))
         
-        self.model = build_model(
-            model_type=args.model_type,
-            input_shape=input_shape,
-            num_classes=num_classes,
-            dropout_rate=args.dropout,
-            l1_reg=args.l1,
-            l2_reg=args.l2
-        )
+        save_path = os.path.join("model", f"{args.model_type}.h5")
+        
+        # Load existing model if resume is requested or if model exists
+        if args.resume and os.path.exists(save_path):
+            logger.info(f"Resuming training: Loading existing model from {save_path}")
+            try:
+                self.model = keras.models.load_model(save_path)
+                # Recompile to ensure correct optimizer and loss (prevents potential issues)
+                self.model.compile(
+                    optimizer='adam', 
+                    loss='sparse_categorical_crossentropy', 
+                    metrics=['accuracy']
+                )
+                logger.info("Successfully loaded and recompiled model for continuous training")
+            except Exception as e:
+                logger.error(f"Failed to load existing model: {str(e)}. Building fresh model instead.")
+                self.model = build_model(
+                    model_type=args.model_type,
+                    input_shape=input_shape,
+                    num_classes=num_classes,
+                    dropout_rate=args.dropout,
+                    l1_reg=args.l1,
+                    l2_reg=args.l2
+                )
+        else:
+            if args.resume:
+                logger.warning(f"Resume requested but model file not found at {save_path}. Building fresh model.")
+            
+            self.model = build_model(
+                model_type=args.model_type,
+                input_shape=input_shape,
+                num_classes=num_classes,
+                dropout_rate=args.dropout,
+                l1_reg=args.l1,
+                l2_reg=args.l2
+            )
         
         self.model.summary(print_fn=logger.info)
         
@@ -100,7 +128,6 @@ class ImprovedModelTrainer:
             verbose=1
         )
         
-        save_path = os.path.join("model", f"{args.model_type}.h5")
         os.makedirs("model", exist_ok=True)
         self.model.save(save_path)
         logger.info(f"Model saved to {save_path}")
@@ -117,7 +144,11 @@ class ImprovedModelTrainer:
         eval_metrics = self.model.evaluate(X_test, y_test, verbose=0)
         
         class_names = ['Relaxed', 'Focused', 'Stressed']
-        report = classification_report(y_test, y_pred, target_names=class_names, output_dict=True)
+        # Filter class names based on unique labels in y_test to avoid classification_report error
+        unique_labels = np.unique(y_test)
+        target_names = [class_names[i] for i in unique_labels]
+        
+        report = classification_report(y_test, y_pred, labels=unique_labels, target_names=target_names, output_dict=True)
         cm = confusion_matrix(y_test, y_pred)
         
         results = {
@@ -195,6 +226,7 @@ def main():
     parser.add_argument("--data", type=str, default="data/training_data/training.csv", help="Path to training CSV")
     parser.add_argument("--model-type", type=str, default="enhanced_cnn_lstm", 
                         choices=['original', 'enhanced_cnn_lstm', 'resnet_lstm', 'transformer'], help="Architecture")
+    parser.add_argument("--resume", action="store_true", help="Resume training from existing model if available")
     
     # Training Params
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
@@ -216,7 +248,7 @@ def main():
     args = parser.parse_args()
     
     logger.info("=" * 60)
-    logger.info(f"Starting Training: {args.model_type}")
+    logger.info(f"Starting Training: {args.model_type} (Resume: {args.resume})")
     logger.info("=" * 60)
     
     try:

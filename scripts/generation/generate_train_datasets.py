@@ -89,20 +89,34 @@ def generate_chunk(chunk_size: int, transition_ratio: float = 0.1) -> pd.DataFra
 
 def main():
     parser = argparse.ArgumentParser(description="Generate large-scale EEG training datasets.")
-    parser.add_argument("--total_samples", type=int, default=100000, help="Total samples to generate")
+    parser.add_argument("--total_samples", "--samples", type=int, default=None, help="Total samples to generate")
+    parser.add_argument("--transitions", type=int, default=None, help="Number of transition samples (overrides transition_ratio)")
     parser.add_argument("--chunk_size", type=int, default=50000, help="Samples per processing chunk")
-    parser.add_argument("--transition_ratio", type=float, default=0.1, help="Ratio of transition samples")
+    parser.add_argument("--transition_ratio", type=float, default=0.1, help="Ratio of transition samples (0.0 to 1.0)")
     parser.add_argument("--outfile", type=str, default="data/training_data/training.csv", help="Output file path")
     parser.add_argument("--workers", type=int, default=mp.cpu_count(), help="Number of parallel workers")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
     args = parser.parse_args()
     np.random.seed(args.seed)
+
+    # Handle backward compatibility and argument prioritization
+    if args.total_samples is None:
+        # Default if nothing provided
+        total_samples = 100000
+    else:
+        total_samples = args.total_samples
+
+    transition_ratio = args.transition_ratio
+    if args.transitions is not None:
+        # If specific transition count is provided, recalculate ratio
+        transition_ratio = args.transitions / total_samples if total_samples > 0 else 0
     
     print("=" * 60)
     print("NeuroLab Scalable Data Generator")
     print(f"Time: {datetime.now().strftime('%H:%M:%S')}")
-    print(f"Target: {args.total_samples:,} samples")
+    print(f"Target: {total_samples:,} samples")
+    print(f"Transition Ratio: {transition_ratio:.2%}")
     print(f"Workers: {args.workers}")
     print("=" * 60)
     
@@ -110,8 +124,8 @@ def main():
     os.makedirs(os.path.dirname(args.outfile), exist_ok=True)
     
     # Calculate chunks
-    num_chunks = max(1, args.total_samples // args.chunk_size)
-    samples_per_worker_chunk = args.total_samples // num_chunks
+    num_chunks = max(1, total_samples // args.chunk_size)
+    samples_per_worker_chunk = total_samples // num_chunks
     
     print(f"Generating in {num_chunks} chunks of ~{samples_per_worker_chunk:,} samples each...")
     
@@ -121,11 +135,11 @@ def main():
     
     with mp.Pool(processes=args.workers) as pool:
         # Create a partial function with fixed transition ratio
-        gen_func = partial(generate_chunk, transition_ratio=args.transition_ratio)
+        gen_func = partial(generate_chunk, transition_ratio=transition_ratio)
         
         # Generator for chunk sizes
         chunk_sizes = [samples_per_worker_chunk] * (num_chunks - 1)
-        chunk_sizes.append(args.total_samples - sum(chunk_sizes))
+        chunk_sizes.append(total_samples - sum(chunk_sizes))
         
         for df_chunk in pool.imap_unordered(gen_func, chunk_sizes):
             # Save chunk to CSV
@@ -136,8 +150,8 @@ def main():
             processed_count += len(df_chunk)
             first_chunk = False
             
-            percent = (processed_count / args.total_samples) * 100
-            print(f"Progress: [{processed_count:,}/{args.total_samples:,}] {percent:.1f}% complete")
+            percent = (processed_count / total_samples) * 100 if total_samples > 0 else 100
+            print(f"Progress: [{processed_count:,}/{total_samples:,}] {percent:.1f}% complete")
 
     print(f"\n✓ Successfully saved {processed_count:,} samples to {args.outfile}")
     
