@@ -74,3 +74,12 @@ LOGGING_CONFIG = {
 
 MODEL_VERSION = "v3.1.0"
 MODEL_NAME = "NeuroLab Axon Prime"
+ 
+LLM_CONFIG = {
+    'provider': 'groq',
+    'api_key': os.getenv('GROQ_API_KEY'),
+    'model': 'llama3-70b-8192',
+    'temperature': 0.7,
+    'max_tokens': 1024,
+    'timeout': 30
+}
