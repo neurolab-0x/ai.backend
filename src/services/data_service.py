@@ -227,7 +227,7 @@ class DataHandler:
             context.state_label = data_point.state.lower() if data_point.state else "relaxed"
             
             # Generate medical explanation
-            explanation = recommendation_engine.generate_medical_explanation(context)
+            explanation = await recommendation_engine.generate_medical_explanation(context)
             return explanation
             
         except Exception as e:

@@ -27,7 +27,7 @@ async def process_uploaded_file(
         if file:
             validate_file(file)
             file_location = await save_uploaded_file(file)
-            result = ml_processor.process_eeg_data(
+            result = await ml_processor.process_eeg_data(
                 file_location, 
                 "anonymous", 
                 "session_1", 
@@ -65,7 +65,7 @@ async def analyze_eeg_data(
 ):
     """Analyze EEG data and return results"""
     try:
-        result = ml_processor.process_eeg_data(
+        result = await ml_processor.process_eeg_data(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
             session_id=data.get('session_id', 'session_1'),
@@ -88,7 +88,7 @@ async def generate_detailed_report(
 ):
     """Generate a detailed analysis report with comprehensive recommendations"""
     try:
-        report = ml_processor.generate_detailed_report(
+        report = await ml_processor.generate_detailed_report(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
             session_id=data.get('session_id', 'session_1'),
@@ -113,9 +113,8 @@ async def get_recommendations(
 ):
     """Get personalized recommendations based on EEG analysis"""
     try:
-        from src.services.recommendation import get_recommendations
-        
-        recommendations = get_recommendations(
+        # Use the singleton recommendation engine from ml_processor for consistency
+        recommendations = await ml_processor.recommendation_engine.generate_recommendations(
             state_durations=state_durations,
             total_duration=total_duration,
             confidence=confidence,

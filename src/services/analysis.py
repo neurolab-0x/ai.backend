@@ -83,7 +83,7 @@ class MLProcessor:
                 return None
         return self.models.get(model_type)
 
-    def process_eeg_data(
+    async def process_eeg_data(
         self, 
         data: Union[str, Dict, np.ndarray, pd.DataFrame], 
         subject_id: str = "anonymous", 
@@ -131,13 +131,15 @@ class MLProcessor:
             cognitive_metrics = self._calculate_cognitive_metrics(processed_features)
             state_transitions = self._count_state_transitions(smoothed_states)
             
-            # Step 5: Generate NLP-based recommendations
-            recommendations = self.recommendation_engine.generate_recommendations(
+            # Step 5: Generate NLP-based recommendations (RAG with Groq)
+            recommendations = await self.recommendation_engine.generate_recommendations(
                 state_durations,
                 total_duration,
                 predictions['confidence'],
                 cognitive_metrics=cognitive_metrics,
-                state_transitions=state_transitions
+                state_transitions=state_transitions,
+                subject_id=subject_id,
+                session_id=session_id
             )
             
             # Step 6: Compile results
@@ -430,7 +432,7 @@ class MLProcessor:
         logger.info(f"Reloading model from {self.model_path}")
         self._load_model()
     
-    def generate_detailed_report(
+    async def generate_detailed_report(
         self,
         data: Union[str, Dict, np.ndarray, pd.DataFrame],
         subject_id: str = "anonymous",
@@ -453,15 +455,17 @@ class MLProcessor:
         """
         try:
             # Process the data first
-            result = self.process_eeg_data(data, subject_id, session_id, model_type=model_type)
+            result = await self.process_eeg_data(data, subject_id, session_id, model_type=model_type)
             
             # Generate detailed report using NLP engine
-            detailed_report = self.recommendation_engine.generate_detailed_report(
+            detailed_report = await self.recommendation_engine.generate_detailed_report(
                 state_durations=result['state_durations'],
                 total_duration=result['temporal_analysis']['total_samples'],
                 confidence=result['confidence'],
                 cognitive_metrics=result['cognitive_metrics'],
-                state_transitions=result['temporal_analysis']['state_transitions']
+                state_transitions=result['temporal_analysis']['state_transitions'],
+                subject_id=subject_id,
+                session_id=session_id
             )
             
             # Merge with existing result
