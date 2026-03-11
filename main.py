@@ -55,7 +55,7 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(system_router)
-app.include_router(analysis_router, prefix="/api/analysis", tags=["Analysis"])
+app.include_router(analysis_router, tags=["Analysis"])
 app.include_router(training_router, prefix="/api/training", tags=["Training"])
 app.include_router(voice_router, prefix="/api/voice", tags=["Voice Analysis"])
 app.include_router(model_mgmt_router, prefix="/api/model", tags=["Model Management"])

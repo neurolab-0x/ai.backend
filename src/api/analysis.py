@@ -172,21 +172,38 @@ async def get_decision_support(
 
 @router.post('/chat', summary="AI Chat response")
 async def get_chat_response(
-    message: str = Body(..., embed=True)
+    message: str = Body(..., embed=True),
+    subject_id: Optional[str] = Body(None, description="User ID for personalization")
 ):
     """Get a chat response from the AI assistant"""
     try:
         if not ml_processor.recommendation_engine.client:
             return {"response": "I'm sorry, I'm currently running in offline mode. How can I help you with your EEG analysis today?"}
             
+        # Fetch history if subject_id is provided
+        history_context = ""
+        if subject_id:
+            from src.services.database import db_service
+            history = await db_service.get_user_history(subject_id, limit=3)
+            if history:
+                history_str = "\n".join([
+                    f"- {h['time']}: ID {h['run_id']}, Accuracy: {h['accuracy']:.2f}, Loss: {h['loss']:.2f}"
+                    for h in history
+                ])
+                history_context = f"\nUser Historical Session Trends (Last 3 Sessions):\n{history_str}\n"
+
+        system_content = "You are the NeuroLab AI assistant, an expert in neural health and EEG analysis. Provide helpful, concise, and scientific advice."
+        if history_context:
+            system_content += f"\n\nContext for the current user (ID: {subject_id}):{history_context}\nUse this history to personalize your advice if relevant."
+
         completion = ml_processor.recommendation_engine.client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "You are the NeuroLab AI assistant, an expert in neural health and EEG analysis. Provide helpful, concise, and scientific advice."},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": message}
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=1000  # Increased for potentially more detailed personalized responses
         )
         return {"response": completion.choices[0].message.content}
     except Exception as e:
