@@ -11,6 +11,8 @@ from datetime import datetime
 import io
 import tempfile
 import os
+import asyncio
+from src.services.database import db_service
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +261,19 @@ class VoiceProcessor:
                 'features': features,
                 'timestamp': datetime.now().isoformat()
             }
+            
+            # Step 5: Persistence (Async triggers)
+            # Use provided ids if any, otherwise default
+            # Note: IDs would ideally be passed from the API layer
+            try:
+                # Store in MongoDB
+                asyncio.create_task(db_service.store_voice_data(
+                    result, 
+                    result.get('subject_id', 'anonymous'), 
+                    result.get('session_id', 'default_voice_session')
+                ))
+            except Exception as pe:
+                logger.warning(f"Non-critical voice persistence failure: {pe}")
             
             logger.info(f"Processed audio: emotion={emotion}, confidence={confidence:.2f}, state={mental_state}")
             return result
