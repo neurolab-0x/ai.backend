@@ -10,6 +10,7 @@ import pandas as pd
 from queue import Queue
 import threading
 import time
+from src.services.database import db_service
 
 @dataclass
 class EEGDataPoint:
@@ -228,6 +229,27 @@ class DataHandler:
             
             # Generate medical explanation
             explanation = await recommendation_engine.generate_medical_explanation(context)
+            
+            # Step 3: Persistence (Async)
+            try:
+                # Store processed point in InfluxDB
+                asyncio.create_task(db_service.store_eeg_data(
+                    data_point.features, data_point.subject_id, data_point.session_id
+                ))
+                
+                # Store explanation in MongoDB
+                asyncio.create_task(db_service.store_session_summary({
+                    "type": "realtime_datapoint",
+                    "subject_id": data_point.subject_id,
+                    "session_id": data_point.session_id,
+                    "timestamp": data_point.timestamp,
+                    "state": context.state_label,
+                    "confidence": data_point.confidence,
+                    "explanation": explanation
+                }))
+            except Exception as pe:
+                self.logger.warning(f"Real-time persistence skipped: {pe}")
+                
             return explanation
             
         except Exception as e:

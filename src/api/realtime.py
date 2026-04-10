@@ -14,6 +14,8 @@ from src.core.processing.filters import apply_eeg_preprocessing
 from src.config.settings import PROCESSING_CONFIG
 from src.services.data_service import DataHandler, EEGDataPoint
 from src.services.recommendation import NLPRecommendationEngine
+from src.services.database import db_service
+import asyncio
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -229,7 +231,9 @@ def process_streaming_chunk(
     data: np.ndarray, 
     model_path: str = None, 
     clean_artifacts: bool = True, 
-    stream_buffer=None
+    stream_buffer=None,
+    subject_id: str = "anonymous",
+    session_id: str = "default_streaming"
 ) -> Dict[str, Any]:
     """
     Process a chunk of streaming EEG data (array-based).
@@ -344,13 +348,29 @@ def process_streaming_chunk(
             confidence = 0.0
             predicted_states = []
             
-        return {
+        result = {
             "predicted_states": predicted_states,
             "dominant_state": dominant_state,
             "confidence": confidence,
             "timestamp": datetime.now().isoformat(),
             "processing_time_ms": 0.0 # Will be calc by caller
         }
+        
+        # Step 4: Persistence (Async)
+        try:
+            # Store summary in MongoDB
+            asyncio.create_task(db_service.store_session_summary({
+                "type": "streaming_chunk",
+                "subject_id": subject_id,
+                "session_id": session_id,
+                "dominant_state": dominant_state,
+                "confidence": confidence,
+                "timestamp": datetime.now()
+            }))
+        except Exception as pe:
+            logger.warning(f"Streaming persistence skipped: {pe}")
+            
+        return result
             
     except Exception as e:
         logger.error(f"Streaming processing error: {str(e)}")
