@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.api.realtime import process_streaming_chunk, StreamBuffer
 # safely import config

@@ -11,6 +11,7 @@ python-multipart>=0.0.18
 python-dotenv==1.0.1
 minio>=7.2.0
 influxdb-client>=1.36.0
+motor>=3.6.0
 groq>=0.11.0
 
 # Data Processing & EEG Analysis

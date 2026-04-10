@@ -4,5 +4,6 @@
     "pythonVersion": "3.11",
     "analysis": {
         "extraPaths": ["src"]
-    }
+    },
+    "reportMissingImports": true
 }
