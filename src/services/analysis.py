@@ -14,6 +14,7 @@ from src.preprocessing.labeling import label_eeg_states
 from src.core.ml.model import load_calibrated_model
 from src.core.processing.temporal import temporal_smoothing, calculate_state_durations
 from src.services.recommendation import NLPRecommendationEngine
+from src.services.database import db_service
 from src.config.settings import PROCESSING_CONFIG, THRESHOLDS
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,26 @@ class MLProcessor:
                     'model_type': model_type
                 }
             }
+            
+            # Step 7: Persistence (Async triggers)
+            try:
+                # Store time-series metrics in InfluxDB
+                asyncio.create_task(db_service.store_eeg_data(
+                    cognitive_metrics, subject_id, session_id
+                ))
+                
+                # Store session metadata in MongoDB
+                asyncio.create_task(db_service.store_session_summary({
+                    "subject_id": subject_id,
+                    "session_id": session_id,
+                    "dominant_state": result['state_label'],
+                    "confidence": result['confidence'],
+                    "state_percentages": result['state_percentages'],
+                    "timestamp": datetime.now(),
+                    "type": "eeg_analysis"
+                }))
+            except Exception as pe:
+                logger.warning(f"Non-critical persistence failure: {pe}")
             
             logger.info(f"Processing complete. Dominant state: {result['state_label']}, Confidence: {result['confidence']:.2f}")
             return result
