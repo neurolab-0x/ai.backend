@@ -16,6 +16,7 @@ from src.core.processing.temporal import temporal_smoothing, calculate_state_dur
 from src.services.recommendation import NLPRecommendationEngine
 from src.services.database import db_service
 from src.config.settings import PROCESSING_CONFIG, THRESHOLDS
+from src.queue import safe_enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -173,21 +174,26 @@ class MLProcessor:
             
             # Step 7: Persistence (Async triggers)
             try:
-                # Store time-series metrics in InfluxDB
-                asyncio.create_task(db_service.store_eeg_data(
-                    cognitive_metrics, subject_id, session_id
-                ))
-                
-                # Store session metadata in MongoDB
-                asyncio.create_task(db_service.store_session_summary({
-                    "subject_id": subject_id,
-                    "session_id": session_id,
-                    "dominant_state": result['state_label'],
-                    "confidence": result['confidence'],
-                    "state_percentages": result['state_percentages'],
-                    "timestamp": datetime.now(),
-                    "type": "eeg_analysis"
-                }))
+                safe_enqueue(
+                    "persistence",
+                    "src.jobs.persistence.store_eeg_data",
+                    cognitive_metrics,
+                    subject_id,
+                    session_id,
+                )
+                safe_enqueue(
+                    "persistence",
+                    "src.jobs.persistence.store_session_summary",
+                    {
+                        "subject_id": subject_id,
+                        "session_id": session_id,
+                        "dominant_state": result["state_label"],
+                        "confidence": result["confidence"],
+                        "state_percentages": result["state_percentages"],
+                        "timestamp": datetime.now(),
+                        "type": "eeg_analysis",
+                    },
+                )
             except Exception as pe:
                 logger.warning(f"Non-critical persistence failure: {pe}")
             

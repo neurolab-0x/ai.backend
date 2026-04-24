@@ -13,6 +13,7 @@ import tempfile
 import os
 import asyncio
 from src.services.database import db_service
+from src.queue import safe_enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -266,12 +267,13 @@ class VoiceProcessor:
             # Use provided ids if any, otherwise default
             # Note: IDs would ideally be passed from the API layer
             try:
-                # Store in MongoDB
-                asyncio.create_task(db_service.store_voice_data(
-                    result, 
-                    result.get('subject_id', 'anonymous'), 
-                    result.get('session_id', 'default_voice_session')
-                ))
+                safe_enqueue(
+                    "persistence",
+                    "src.jobs.persistence.store_voice_data",
+                    result,
+                    result.get("subject_id", "anonymous"),
+                    result.get("session_id", "default_voice_session"),
+                )
             except Exception as pe:
                 logger.warning(f"Non-critical voice persistence failure: {pe}")
             

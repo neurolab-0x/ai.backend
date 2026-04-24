@@ -11,6 +11,7 @@ from queue import Queue
 import threading
 import time
 from src.services.database import db_service
+from src.queue import safe_enqueue
 
 @dataclass
 class EEGDataPoint:
@@ -232,21 +233,26 @@ class DataHandler:
             
             # Step 3: Persistence (Async)
             try:
-                # Store processed point in InfluxDB
-                asyncio.create_task(db_service.store_eeg_data(
-                    data_point.features, data_point.subject_id, data_point.session_id
-                ))
-                
-                # Store explanation in MongoDB
-                asyncio.create_task(db_service.store_session_summary({
-                    "type": "realtime_datapoint",
-                    "subject_id": data_point.subject_id,
-                    "session_id": data_point.session_id,
-                    "timestamp": data_point.timestamp,
-                    "state": context.state_label,
-                    "confidence": data_point.confidence,
-                    "explanation": explanation
-                }))
+                safe_enqueue(
+                    "persistence",
+                    "src.jobs.persistence.store_eeg_data",
+                    data_point.features,
+                    data_point.subject_id,
+                    data_point.session_id,
+                )
+                safe_enqueue(
+                    "persistence",
+                    "src.jobs.persistence.store_session_summary",
+                    {
+                        "type": "realtime_datapoint",
+                        "subject_id": data_point.subject_id,
+                        "session_id": data_point.session_id,
+                        "timestamp": data_point.timestamp,
+                        "state": context.state_label,
+                        "confidence": data_point.confidence,
+                        "explanation": explanation,
+                    },
+                )
             except Exception as pe:
                 self.logger.warning(f"Real-time persistence skipped: {pe}")
                 
