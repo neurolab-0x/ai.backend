@@ -2,18 +2,24 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 import logging
 from src.config.settings import SECURITY_CONFIG
-from src.services.model_manager import ModelManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Initialize component
-model_manager = ModelManager()
+_model_manager = None
+
+def get_model_manager():
+    global _model_manager
+    if _model_manager is None:
+        from src.services.model_manager import ModelManager
+        _model_manager = ModelManager()
+    return _model_manager
 
 @router.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
+        model_manager = get_model_manager()
         return {
             "status": model_manager.get_health_status(),
             "authentication": {
