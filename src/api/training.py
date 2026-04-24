@@ -3,30 +3,21 @@ Training API endpoints for model training and retraining.
 """
 import os
 import logging
-import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, status, UploadFile, File, Query
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Query
 from pydantic import BaseModel, Field, validator
 import numpy as np
-import pandas as pd
+from rq.job import Job
+from rq.exceptions import NoSuchJobError
 
-from src.core.ml.model import train_hybrid_model, evaluate_model, model_comparison, build_model
 from src.utils.files import validate_file, save_uploaded_file
-from src.preprocessing.load_data import load_data
-from src.preprocessing.labeling import label_eeg_states
-from src.preprocessing.features import extract_features
-from src.preprocessing.preprocess import preprocess_data
-from src.services.storage import MinioStorageService
-from src.services.training_monitor import TrainingMonitor
+from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Store training jobs status
-training_jobs = {}
 
 
 class TrainingConfig(BaseModel):
@@ -97,159 +88,9 @@ class TrainingStatus(BaseModel):
     error: Optional[str]
 
 
-async def train_model_background(
-    job_id: str,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: Optional[np.ndarray],
-    y_test: Optional[np.ndarray],
-    config: TrainingConfig,
-    model_type : str
-):
-    """Background task for model training"""
-    try:
-        logger.info(f"Starting training job {job_id}")
-        training_jobs[job_id]['status'] = 'training'
-        training_jobs[job_id]['progress'] = 0.1
-        
-        # Initialize services
-        storage_service = MinioStorageService()
-        monitor = TrainingMonitor()
-        
-        # Log training start
-        monitor.log_training_event(job_id, "STARTED", {
-            "model_type": model_type,
-            "epochs": config.epochs,
-            "subject_id": config.subject_id or "global"
-        })
-        
-        # Train model
-        model, history = train_hybrid_model(
-            X_train, y_train,
-            model_type=model_type,
-            epochs=config.epochs,
-            batch_size=config.batch_size,
-            learning_rate=config.learning_rate,
-            dropout_rate=config.dropout_rate,
-            use_separable=config.use_separable,
-            use_relative_pos=config.use_relative_pos,
-            l1_reg=config.l1_reg,
-            l2_reg=config.l2_reg,
-            subject_id=config.subject_id,
-            session_id=config.session_id,
-            overlap=config.overlap,
-            simple_mode=config.simple_mode
-        )
-        
-        # Performance check
-        if config.validation_mode == 'loso':
-            logger.info(f"LOSO validation requested for job {job_id}")
-            # Note: For LOSO to work, we'd need a DataFrame with subject_ids. 
-            # In a real API, we'd reconstruct this or pass it in.
-            # For now, we'll signal it's handled in the training logic if data permits.
-            pass
-        
-        training_jobs[job_id]['progress'] = 0.7
-        training_jobs[job_id]['message'] = 'Training complete, evaluating model...'
-        
-        # Evaluate model if test data provided
-        metrics = {}
-        if X_test is not None and y_test is not None:
-            metrics = evaluate_model(model, X_test, y_test, calibrate=True)
-            logger.info(f"Model evaluation complete for job {job_id}")
-        
-        training_jobs[job_id]['progress'] = 0.85
-        training_jobs[job_id]['message'] = 'Generating model interpretability analysis...'
-        
-        # Generate interpretability analysis
-        interpretability_results = {}
-        try:
-            from src.core.ml.interpretability import ModelInterpretability
-            
-            interpreter = ModelInterpretability(model)
-            interpreter.set_feature_names(['alpha', 'beta', 'theta', 'delta', 'gamma'])
-            
-            # Use test data if available, otherwise use subset of training data
-            X_explain = X_test if X_test is not None else X_train[:100]
-            
-            # Generate SHAP explanations
-            logger.info(f"Generating SHAP feature importance for job {job_id}")
-            shap_results = interpreter.explain_with_shap(X_explain, n_samples=min(50, len(X_explain)))
-            
-            # Extract feature importance (convert to serializable format)
-            feature_importance = {}
-            for class_idx, importance_array in shap_results['feature_importance'].items():
-                if isinstance(importance_array, np.ndarray):
-                    feature_importance[f'class_{class_idx}'] = {
-                        'alpha': float(importance_array[0]) if len(importance_array) > 0 else 0.0,
-                        'beta': float(importance_array[1]) if len(importance_array) > 1 else 0.0,
-                        'theta': float(importance_array[2]) if len(importance_array) > 2 else 0.0,
-                        'delta': float(importance_array[3]) if len(importance_array) > 3 else 0.0,
-                        'gamma': float(importance_array[4]) if len(importance_array) > 4 else 0.0,
-                    }
-            
-            interpretability_results = {
-                'method': 'shap',
-                'feature_importance_by_class': feature_importance,
-                'n_samples_analyzed': min(50, len(X_explain))
-            }
-            
-            logger.info(f"Interpretability analysis complete for job {job_id}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to generate interpretability analysis for job {job_id}: {str(e)}")
-            interpretability_results = {'error': str(e)}
-        
-        # Update job status
-        training_jobs[job_id]['status'] = 'completed'
-        training_jobs[job_id]['progress'] = 1.0
-        training_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-        training_jobs[job_id]['message'] = 'Training completed successfully'
-        training_jobs[job_id]['metrics'] = {
-            'final_train_accuracy': float(history.history['accuracy'][-1]),
-            'final_val_accuracy': float(history.history['val_accuracy'][-1]),
-            'final_train_loss': float(history.history['loss'][-1]),
-            'final_val_loss': float(history.history['val_loss'][-1]),
-            'test_metrics': metrics if metrics else None,
-            'interpretability': interpretability_results
-        }
-        
-        logger.info(f"Training job {job_id} completed successfully")
-        
-        # Save model to disk first (temp)
-        temp_model_path = f"processed/model_{job_id}.h5"
-        model.save(temp_model_path)
-        
-        # Upload to MinIO
-        if storage_service.enabled:
-            monitor.log_training_event(job_id, "UPLOADING_MODEL")
-            object_name = storage_service.upload_file(temp_model_path, 'models', f"{job_id}/model.h5")
-            if object_name:
-                training_jobs[job_id]['model_url'] = storage_service.get_file_url('models', f"{job_id}/model.h5")
-                
-        # Log completion metrics
-        monitor.log_training_event(job_id, "COMPLETED", {
-             "final_accuracy": float(history.history['accuracy'][-1]),
-             "final_loss": float(history.history['loss'][-1])
-        })
-        
-        # Cleanup temp file if needed, or keep as local cache
-        # os.remove(temp_model_path) 
-        
-    except Exception as e:
-        logger.error(f"Training job {job_id} failed: {str(e)}")
-        # Log failure
-        monitor = TrainingMonitor() # Re-init just in case
-        monitor.log_training_event(job_id, "FAILED", {"error": str(e)})
-        training_jobs[job_id]['status'] = 'failed'
-        training_jobs[job_id]['error'] = str(e)
-        training_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-
-
 @router.post("/train", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def train_model(
     data: TrainingData,
-    background_tasks: BackgroundTasks,
     model_type: str = Query(..., description="Architecture to use for training (required)"),
     # current_user: Dict = Depends(require_admin_role)
 ):
@@ -260,9 +101,6 @@ async def train_model(
     Use the job_id to check training status via /api/train/status/{job_id}
     """
     try:
-        # Generate job ID
-        job_id = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -276,33 +114,38 @@ async def train_model(
             # Sync model_type from query param to config
             data.config.model_type = model_type
 
-        # Initialize job status
-        training_jobs[job_id] = {
-            'job_id': job_id,
-            'status': 'queued',
-            'progress': 0.0,
-            'message': 'Training job queued',
-            'started_at': datetime.now().isoformat(),
-            'completed_at': None,
-            'metrics': None,
-            'error': None,
-            'user': 'test_user',
-            'config': data.config.dict()
-        }
-        
-        # Start background training
-        background_tasks.add_task(
-            train_model_background,
-            job_id, X_train, y_train, X_test, y_test, data.config, model_type
-        )
-        
-        logger.info(f"Training job {job_id} queued by testing user")
+        # Persist arrays to disk to avoid pickling huge payloads into Redis.
+        os.makedirs("temp", exist_ok=True)
+        temp_npz = os.path.join("temp", f"train_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.npz")
+        if X_test is None or y_test is None:
+            np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train)
+        else:
+            np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+
+        try:
+            q = get_queue("training")
+            job = q.enqueue(
+                "src.jobs.training.train_from_npz",
+                temp_npz,
+                data.config.dict(),
+                model_type,
+                job_timeout=60 * 60 * 6,  # 6h
+                result_ttl=60 * 60 * 24,
+            )
+        except Exception:
+            try:
+                os.remove(temp_npz)
+            except OSError:
+                pass
+            raise
+        track_job("training", job.id)
+        logger.info(f"Training job {job.id} enqueued")
         
         return TrainingResponse(
-            job_id=job_id,
+            job_id=job.id,
             status='queued',
             message='Training job started in background',
-            started_at=training_jobs[job_id]['started_at']
+            started_at=datetime.now().isoformat()
         )
         
     except Exception as e:
@@ -320,7 +163,6 @@ async def train_model_from_file(
     overlap: float = Query(0.5, ge=0.0, le=0.9, description="Overlap between epochs"),
     simple_mode: bool = Query(True, description="Whether to use simplified feature extraction"),
     config: Optional[str] = None,
-    background_tasks: BackgroundTasks = None,
     #current_user: Dict = Depends(require_admin_role)
 ):
     """
@@ -334,17 +176,6 @@ async def train_model_from_file(
         
         # Save uploaded file
         file_location = await save_uploaded_file(file)
-        
-        # Load and process data
-        df = load_data(file_location)
-        df = label_eeg_states(df)
-        
-        # Preprocess data (this will handle feature extraction correctly if provided with raw data)
-        X_train, X_test, y_train, y_test, metadata = preprocess_data(
-            df, 
-            overlap=overlap, 
-            simple_mode=simple_mode
-        )
         
         # Parse config if provided
         if config:
@@ -363,42 +194,31 @@ async def train_model_from_file(
                 overlap=overlap,
                 simple_mode=simple_mode
             )
-        
-        # Generate job ID
-        job_id = f"train_file_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Initialize job status
-        training_jobs[job_id] = {
-            'job_id': job_id,
-            'status': 'queued',
-            'progress': 0.0,
-            'message': 'Training job queued',
-            'started_at': datetime.now().isoformat(),
-            'completed_at': None,
-            'metrics': None,
-            'error': None,
-            'user': 'test_user',
-            'config': training_config.dict(),
-            'file': file.filename,
-            'model_type': model_type
-        }
-        
-        # Start background training
-        background_tasks.add_task(
-            train_model_background,
-            job_id, X_train, y_train, X_test, y_test, training_config, model_type
-        )
-        
-        # Clean up uploaded file
-        os.remove(file_location)
-        
-        logger.info(f"Training job {job_id} queued from file {file.filename}")
+
+        try:
+            q = get_queue("training")
+            job = q.enqueue(
+                "src.jobs.training.train_from_file",
+                file_location,
+                training_config.dict(),
+                model_type,
+                job_timeout=60 * 60 * 6,  # 6h
+                result_ttl=60 * 60 * 24,
+            )
+        except Exception:
+            try:
+                os.remove(file_location)
+            except OSError:
+                pass
+            raise
+        track_job("training", job.id)
+        logger.info(f"Training-from-file job {job.id} enqueued for {file.filename}")
         
         return TrainingResponse(
-            job_id=job_id,
+            job_id=job.id,
             status='queued',
             message=f'Training job started from file {file.filename}',
-            started_at=training_jobs[job_id]['started_at']
+            started_at=datetime.now().isoformat()
         )
         
     except Exception as e:
@@ -417,15 +237,28 @@ async def get_training_status(
     """
     Get the status of a training job.
     """
-    if job_id not in training_jobs:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training job {job_id} not found"
-        )
-    
-    job = training_jobs[job_id]
-    
-    return TrainingStatus(**job)
+    try:
+        job = Job.fetch(job_id, connection=get_queue("training").connection)
+    except NoSuchJobError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Training job {job_id} not found")
+
+    status_str = job.get_status()
+    progress = float(job.meta.get("progress", 0.0))
+    message = job.meta.get("message", status_str)
+
+    result = job.result if job.is_finished else None
+    error = str(job.exc_info) if job.is_failed else None
+
+    return TrainingStatus(
+        job_id=job.id,
+        status=status_str,
+        progress=progress,
+        message=message,
+        started_at=job.enqueued_at.isoformat() if job.enqueued_at else datetime.now().isoformat(),
+        completed_at=job.ended_at.isoformat() if job.ended_at else None,
+        metrics=result if isinstance(result, dict) else None,
+        error=error,
+    )
 
 
 @router.get("/jobs", response_model=List[TrainingStatus])
@@ -437,12 +270,28 @@ async def list_training_jobs(
     List training jobs.
     Returns all jobs (authentication disabled).
     """
-    # Return all jobs since authentication is currently disabled
-    all_jobs = [TrainingStatus(**job) for job in training_jobs.values()]
-    
-    # Sort by started_at (most recent first) and limit
-    all_jobs.sort(key=lambda x: x.started_at, reverse=True)
-    return all_jobs[:limit]
+    job_ids = list_tracked_jobs("training")
+    jobs: List[TrainingStatus] = []
+    for jid in job_ids:
+        try:
+            job = Job.fetch(jid, connection=get_queue("training").connection)
+        except Exception:
+            continue
+        status_str = job.get_status()
+        jobs.append(
+            TrainingStatus(
+                job_id=job.id,
+                status=status_str,
+                progress=float(job.meta.get("progress", 0.0)),
+                message=str(job.meta.get("message", status_str)),
+                started_at=job.enqueued_at.isoformat() if job.enqueued_at else datetime.now().isoformat(),
+                completed_at=job.ended_at.isoformat() if job.ended_at else None,
+                metrics=job.result if job.is_finished and isinstance(job.result, dict) else None,
+                error=str(job.exc_info) if job.is_failed else None,
+            )
+        )
+    jobs.sort(key=lambda j: j.started_at, reverse=True)
+    return jobs[:limit]
 
 
 @router.delete("/job/{job_id}")
@@ -453,22 +302,18 @@ async def delete_training_job(
     """
     Delete a training job record (Admin only).
     """
-    if job_id not in training_jobs:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training job {job_id} not found"
-        )
-    
-    del training_jobs[job_id]
-    logger.info(f"Training job {job_id} deleted by {current_user['sub']}")
-    
+    try:
+        job = Job.fetch(job_id, connection=get_queue("training").connection)
+    except NoSuchJobError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Training job {job_id} not found")
+    job.delete()
+    untrack_job("training", job_id)
     return {"status": "success", "message": f"Training job {job_id} deleted"}
 
 
 @router.post("/compare", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def compare_models(
     data: TrainingData,
-    background_tasks: BackgroundTasks,
     n_repeats: int = 3,
     # current_user: Dict = Depends(require_admin_role)
 ):
@@ -478,9 +323,6 @@ async def compare_models(
     (Authentication disabled)
     """
     try:
-        # Generate job ID
-        job_id = f"compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -493,54 +335,32 @@ async def compare_models(
                 detail="Test data is required for model comparison"
             )
         
-        # Initialize job status
-        training_jobs[job_id] = {
-            'job_id': job_id,
-            'status': 'queued',
-            'progress': 0.0,
-            'message': 'Model comparison job queued',
-            'started_at': datetime.now().isoformat(),
-            'completed_at': None,
-            'metrics': None,
-            'error': None,
-            'user': 'anonymous',
-            'type': 'comparison'
-        }
-        
-        # Start background comparison
-        async def compare_models_background():
+        os.makedirs("temp", exist_ok=True)
+        temp_npz = os.path.join("temp", f"compare_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.npz")
+        np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+
+        try:
+            q = get_queue("training")
+            job = q.enqueue(
+                "src.jobs.training.compare_models_from_npz",
+                temp_npz,
+                n_repeats=n_repeats,
+                job_timeout=60 * 60 * 6,
+                result_ttl=60 * 60 * 24,
+            )
+        except Exception:
             try:
-                training_jobs[job_id]['status'] = 'running'
-                training_jobs[job_id]['message'] = 'Comparing models...'
-                
-                results = model_comparison(
-                    X_train, y_train, X_test, y_test,
-                    n_repeats=n_repeats
-                )
-                
-                training_jobs[job_id]['status'] = 'completed'
-                training_jobs[job_id]['progress'] = 1.0
-                training_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-                training_jobs[job_id]['message'] = 'Model comparison completed'
-                training_jobs[job_id]['metrics'] = results
-                
-                logger.info(f"Model comparison job {job_id} completed")
-                
-            except Exception as e:
-                logger.error(f"Model comparison job {job_id} failed: {str(e)}")
-                training_jobs[job_id]['status'] = 'failed'
-                training_jobs[job_id]['error'] = str(e)
-                training_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-        
-        background_tasks.add_task(compare_models_background)
-        
-        logger.info(f"Model comparison job {job_id} queued")
+                os.remove(temp_npz)
+            except OSError:
+                pass
+            raise
+        track_job("training", job.id)
         
         return TrainingResponse(
-            job_id=job_id,
+            job_id=job.id,
             status='queued',
             message='Model comparison started in background',
-            started_at=training_jobs[job_id]['started_at']
+            started_at=datetime.now().isoformat()
         )
         
     except HTTPException:
