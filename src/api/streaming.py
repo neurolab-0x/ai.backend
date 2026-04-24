@@ -7,8 +7,7 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Dict, Any, Optional, Union
 import base64
 
-from src.api.realtime import process_realtime_data, process_streaming_chunk, StreamBuffer
-from src.core.ml.interpretability import ModelInterpretability
+from src.api.realtime import process_streaming_chunk, StreamBuffer
 from src.config.settings import REAL_TIME_CONFIG, SECURITY_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -22,9 +21,26 @@ client_buffers = {}
 def require_user_role(x): return x
 def validate_client_identifier(x): return x
 def validate_eeg_data(x): return True
-def sanitize_model_type(x): return x
+_VALID_MODEL_TYPES = {
+    "original",
+    "enhanced_cnn_lstm",
+    "resnet_lstm",
+    "transformer",
+    "trained_model",
+}
+
+def sanitize_model_type(x):
+    if x is None:
+        return None
+    x = str(x).strip()
+    if x in _VALID_MODEL_TYPES:
+        return x
+    raise ValueError("Invalid model_type")
 class DataEncryption:
-    def encrypt_data(self, data): return data
+    def encrypt_data(self, data):
+        # Not real cryptography; just a stable bytes payload so base64 encoding works.
+        import json
+        return json.dumps(data, default=str).encode("utf-8")
 encryption = DataEncryption()
 
 # Enhanced Pydantic models with validation
@@ -128,7 +144,7 @@ async def stream_eeg_data(
             
         # Sanitize model type to prevent path traversal
         model_type = sanitize_model_type(data.model_type) if data.model_type else None
-        model_path = f"./model/trained_model.h5" if model_type else None
+        model_path = f"./model/{model_type}.h5" if model_type else None
         
         # Process the data with the optimized pipeline
         result = process_streaming_chunk(
@@ -143,16 +159,15 @@ async def stream_eeg_data(
         
         # Add processing statistics
         total_time_ms = round((time.time() - start_time) * 1000, 2)
-        result['total_processing_time_ms'] = total_time_ms
+        result['processing_time_ms'] = total_time_ms
         
         # Add interpretability data if requested
         if data.include_interpretability:
             try:
                 # Load the model used for predictions
                 from src.core.ml.model import load_calibrated_model
-                from main import MODEL_PATH  # Import model path from main
-                
-                model = load_calibrated_model(model_path or MODEL_PATH)
+                from src.core.ml.interpretability import ModelInterpretability
+                model = load_calibrated_model(model_path or "./model/trained_model.h5")
                 
                 # Create interpretability handler
                 interpreter = ModelInterpretability(model)
