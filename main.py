@@ -1,5 +1,8 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 import logging
 import uvicorn
@@ -41,8 +44,18 @@ app = FastAPI(
     title="NeuroLab Axon Prime - Cloud Server",
     description="API for EEG signal processing and mental state classification",
     version="2.0.1",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+API_PREFIX = os.getenv("API_PREFIX", "/api/v1").rstrip("/")
+
+# Mount Swagger/OpenAPI under the versioned prefix.
+app.docs_url = f"{API_PREFIX}/docs"
+app.redoc_url = f"{API_PREFIX}/redoc"
+app.openapi_url = f"{API_PREFIX}/openapi.json"
 
 # Add CORS middleware
 app.add_middleware(
@@ -53,15 +66,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API routers
-app.include_router(system_router)
-app.include_router(analysis_router, tags=["Analysis"])
-app.include_router(training_router, prefix="/api/training", tags=["Training"])
-app.include_router(voice_router, prefix="/api/voice", tags=["Voice Analysis"])
-app.include_router(model_mgmt_router, prefix="/api/model", tags=["Model Management"])
+# Redirect convenience endpoints to the versioned docs.
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    return RedirectResponse(url=app.docs_url)
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_redirect():
+    return RedirectResponse(url=app.openapi_url)
+
+# Versioned API routers (standardized)
+app.include_router(system_router, prefix=API_PREFIX, tags=["System"])
+app.include_router(analysis_router, prefix=f"{API_PREFIX}/eeg", tags=["EEG"])
+app.include_router(training_router, prefix=f"{API_PREFIX}/training", tags=["Training"])
+app.include_router(voice_router, prefix=f"{API_PREFIX}/voice", tags=["Voice"])
+app.include_router(model_mgmt_router, prefix=f"{API_PREFIX}/models", tags=["Models"])
 
 if STREAMING_AVAILABLE:
-    app.include_router(streaming_router, prefix="/api/streaming", tags=["Streaming"])
+    app.include_router(streaming_router, prefix=f"{API_PREFIX}/streaming", tags=["Streaming"])
+
+# Legacy routes (backward-compatible, hidden from Swagger)
+app.include_router(system_router, include_in_schema=False)
+app.include_router(analysis_router, include_in_schema=False)
+app.include_router(training_router, prefix="/api/training", include_in_schema=False)
+app.include_router(voice_router, prefix="/api/voice", include_in_schema=False)
+app.include_router(model_mgmt_router, prefix="/api/model", include_in_schema=False)
+if STREAMING_AVAILABLE:
+    app.include_router(streaming_router, prefix="/api/streaming", include_in_schema=False)
 
 def main():
     """Main entry point"""
