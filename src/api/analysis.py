@@ -1,17 +1,22 @@
-from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException
 from typing import Optional, Dict, Any, List
 import logging
 import base64
 from datetime import datetime
 
 from src.utils.files import validate_file, save_uploaded_file
-from src.services.analysis import MLProcessor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Initialize component
-ml_processor = MLProcessor()
+_ml_processor = None
+
+def get_ml_processor():
+    global _ml_processor
+    if _ml_processor is None:
+        from src.services.analysis import MLProcessor
+        _ml_processor = MLProcessor()
+    return _ml_processor
 
 @router.post('/upload', summary="Advanced EEG analysis", response_description="Cognitive state report")
 async def process_uploaded_file(
@@ -24,6 +29,7 @@ async def process_uploaded_file(
 ):
     """Process uploaded EEG file or JSON data"""
     try:
+        ml_processor = get_ml_processor()
         if file:
             validate_file(file)
             file_location = await save_uploaded_file(file)
@@ -36,7 +42,7 @@ async def process_uploaded_file(
                 simple_mode=simple_mode
             )
         elif json_data:
-            result = ml_processor.process_eeg_data(
+            result = await ml_processor.process_eeg_data(
                 json_data, 
                 "anonymous", 
                 "session_1", 
@@ -60,11 +66,11 @@ async def analyze_eeg_data(
     data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
     model_type: str = Query(..., description="Architecture to use for analysis (required)"),
     overlap: float = Query(0.0, ge=0.0, le=0.9, description="Overlap between epochs"),
-    simple_mode: bool = Query(True, description="Whether to use simplified feature extraction"),
-    background_tasks: BackgroundTasks = None
+    simple_mode: bool = Query(True, description="Whether to use simplified feature extraction")
 ):
     """Analyze EEG data and return results"""
     try:
+        ml_processor = get_ml_processor()
         result = await ml_processor.process_eeg_data(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
@@ -88,6 +94,7 @@ async def generate_detailed_report(
 ):
     """Generate a detailed analysis report with comprehensive recommendations"""
     try:
+        ml_processor = get_ml_processor()
         report = await ml_processor.generate_detailed_report(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
@@ -113,6 +120,7 @@ async def get_recommendations(
 ):
     """Get personalized recommendations based on EEG analysis"""
     try:
+        ml_processor = get_ml_processor()
         # Use the singleton recommendation engine from ml_processor for consistency
         recommendations = await ml_processor.recommendation_engine.generate_recommendations(
             state_durations=state_durations,
@@ -177,6 +185,7 @@ async def get_chat_response(
 ):
     """Get a chat response from the AI assistant"""
     try:
+        ml_processor = get_ml_processor()
         if not ml_processor.recommendation_engine.client:
             return {"response": "I'm sorry, I'm currently running in offline mode. How can I help you with your EEG analysis today?"}
             

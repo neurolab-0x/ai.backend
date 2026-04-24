@@ -1,4 +1,13 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: neurolab-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - neurolab-network
+    restart: unless-stopped
+
   # NeuroLab API Service
   neurolab-api:
     build:
@@ -15,6 +24,7 @@ services:
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/app/data
@@ -25,6 +35,7 @@ services:
     depends_on:
       - influxdb
       - minio
+      - redis
     networks:
       - neurolab-network
     restart: unless-stopped
@@ -34,6 +45,37 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  neurolab-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neurolab_worker
+    command: ["python", "-m", "src.worker"]
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - RQ_QUEUES=${RQ_QUEUES:-training,persistence,default}
+      - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-your-token-here}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-neurolab}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-eeg_data}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+      - ./model:/app/processed
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+      - ./processed:/app/processed
+    depends_on:
+      - redis
+      - influxdb
+      - minio
+    networks:
+      - neurolab-network
+    restart: unless-stopped
 
   # InfluxDB Service
   influxdb:
