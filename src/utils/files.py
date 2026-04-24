@@ -16,11 +16,7 @@ def validate_file(file: UploadFile):
             status_code=400,
             detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
         )
-    if file.size > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds size limit of {MAX_FILE_SIZE//1024//1024}MB"
-        )
+    # UploadFile doesn't reliably expose size across servers; enforce limit while saving.
 
 async def save_uploaded_file(file: UploadFile, user_id: str = "anonymous") -> str:
     """Save uploaded file with timestamp prefixing"""
@@ -31,7 +27,19 @@ async def save_uploaded_file(file: UploadFile, user_id: str = "anonymous") -> st
         file_location = f"temp/{timestamp}_{user_id}_{safe_filename}"
         
         with open(file_location, "wb") as f:
+            total_bytes = 0
             while content := await file.read(1024 * 1024):
+                total_bytes += len(content)
+                if total_bytes > MAX_FILE_SIZE:
+                    f.close()
+                    try:
+                        os.remove(file_location)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds size limit of {MAX_FILE_SIZE//1024//1024}MB"
+                    )
                 f.write(content)
                 
         if os.path.getsize(file_location) == 0:

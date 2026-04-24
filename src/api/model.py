@@ -1,20 +1,14 @@
-from fastapi import APIRouter, Body, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Body, HTTPException
 from typing import Dict, Any
 import logging
 import os
 
-from src.services.model_manager import ModelManager
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Initialize component
-model_manager = ModelManager()
 
 @router.post('/calibrate', summary="Calibrate model", response_description="Calibration results")
 async def calibrate_model_endpoint(
     request: Dict[str, Any] = Body(..., description="Calibration request with model_name and data"),
-    background_tasks: BackgroundTasks = None
 ):
     """
     Calibrate a model with new data using temperature scaling.

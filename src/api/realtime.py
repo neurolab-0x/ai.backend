@@ -7,7 +7,6 @@ from datetime import datetime
 import pandas as pd
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.features import extract_features, extract_features_from_timeseries
-from src.core.ml.model import load_calibrated_model
 from src.core.processing.temporal import temporal_smoothing
 from src.core.processing.artifacts import clean_eeg
 from src.core.processing.filters import apply_eeg_preprocessing
@@ -15,6 +14,7 @@ from src.config.settings import PROCESSING_CONFIG
 from src.services.data_service import DataHandler, EEGDataPoint
 from src.services.recommendation import NLPRecommendationEngine
 from src.services.database import db_service
+from src.queue import safe_enqueue
 import asyncio
 from typing import Dict, Any
 
@@ -36,6 +36,7 @@ class ModelCache:
         """Get model from cache or load it if not available"""
         if model_path not in self._loaded_models:
             logger.info(f"Loading model from {model_path} (not in cache)")
+            from src.core.ml.model import load_calibrated_model
             self._loaded_models[model_path] = load_calibrated_model(model_path)
         return self._loaded_models[model_path]
     
@@ -176,56 +177,6 @@ def calculate_adaptive_window(data, min_window=50, max_window=500):
 
 # Initialize components
 data_handler = DataHandler(buffer_size=1000)
-recommendation_engine = NLPRecommendationEngine()
-
-async def process_realtime_data(data: Dict[str, Any], model) -> Dict[str, Any]:
-    """
-    Process real-time EEG data with immediate state classification and explanation.
-    
-    Args:
-        data (Dict[str, Any]): Input data containing EEG features
-        model: Loaded and calibrated model for inference
-        
-    Returns:
-        Dict[str, Any]: Processing results including state classification and explanation
-        
-    Raises:
-        ValueError: If data processing fails
-    """
-    try:
-        # Extract features
-        features = data.get('features', {})
-        if not features:
-            raise ValueError("No features provided in input data")
-            
-        # Create data point
-        data_point = EEGDataPoint(
-            timestamp=data.get('timestamp'),
-            features=features,
-            subject_id=data.get('subject_id'),
-            session_id=data.get('session_id'),
-            state=None,  # Will be determined by model
-            confidence=None  # Will be determined by model
-        )
-        
-        # Process data point
-        explanation = await data_handler.process_data_point(
-            data_point,
-            recommendation_engine
-        )
-        
-        # Add to buffer for temporal analysis
-        data_handler.buffer.append(data_point)
-        
-        return {
-            "status": "success",
-            "explanation": explanation,
-            "timestamp": data_point.timestamp.isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Real-time processing error: {str(e)}")
-        raise ValueError(f"Real-time processing failed: {str(e)}")
 
 def process_streaming_chunk(
     data: np.ndarray, 
@@ -358,15 +309,18 @@ def process_streaming_chunk(
         
         # Step 4: Persistence (Async)
         try:
-            # Store summary in MongoDB
-            asyncio.create_task(db_service.store_session_summary({
-                "type": "streaming_chunk",
-                "subject_id": subject_id,
-                "session_id": session_id,
-                "dominant_state": dominant_state,
-                "confidence": confidence,
-                "timestamp": datetime.now()
-            }))
+            safe_enqueue(
+                "persistence",
+                "src.jobs.persistence.store_session_summary",
+                {
+                    "type": "streaming_chunk",
+                    "subject_id": subject_id,
+                    "session_id": session_id,
+                    "dominant_state": dominant_state,
+                    "confidence": confidence,
+                    "timestamp": datetime.now(),
+                },
+            )
         except Exception as pe:
             logger.warning(f"Streaming persistence skipped: {pe}")
             
