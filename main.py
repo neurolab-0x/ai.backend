@@ -40,22 +40,17 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application shutdown initiated")
 
+API_PREFIX = os.getenv("API_PREFIX", "/api/v1").rstrip("/")
+
 app = FastAPI(
     title="NeuroLab Axon Prime - Cloud Server",
     description="API for EEG signal processing and mental state classification",
     version="2.0.1",
     lifespan=lifespan,
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+    docs_url=f"{API_PREFIX}/docs",
+    redoc_url=f"{API_PREFIX}/redoc",
+    openapi_url=f"{API_PREFIX}/openapi.json",
 )
-
-API_PREFIX = os.getenv("API_PREFIX", "/api/v1").rstrip("/")
-
-# Mount Swagger/OpenAPI under the versioned prefix.
-app.docs_url = f"{API_PREFIX}/docs"
-app.redoc_url = f"{API_PREFIX}/redoc"
-app.openapi_url = f"{API_PREFIX}/openapi.json"
 
 # Add CORS middleware
 app.add_middleware(
