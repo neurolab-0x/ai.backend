@@ -13,7 +13,7 @@ from rq.exceptions import NoSuchJobError
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
-from src.core.ml.model_types import VALID_MODEL_TYPES, sanitize_model_type
+from src.core.ml.model_types import sanitize_model_type
 
 
 logger = logging.getLogger(__name__)
