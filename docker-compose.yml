@@ -1,6 +1,13 @@
-version: '3.8'
-
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: neurolab-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - neurolab-network
+    restart: unless-stopped
+
   # NeuroLab API Service
   neurolab-api:
     build:
@@ -10,20 +17,25 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URL=${MONGODB_URL:-mongodb://mongodb:27017}
       - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-your-token-here}
       - INFLUXDB_ORG=${INFLUXDB_ORG:-neurolab}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-eeg_data}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/app/data
       - ./model:/app/processed
       - ./logs:/app/logs
       - ./test_data:/app/test_data
+      - ./logs:/app/logs
     depends_on:
-      - mongodb
       - influxdb
+      - minio
+      - redis
     networks:
       - neurolab-network
     restart: unless-stopped
@@ -34,27 +46,36 @@ services:
       retries: 3
       start_period: 40s
 
-  # MongoDB Service
-  mongodb:
-    image: mongo:7.0
-    container_name: neurolab-mongodb
-    ports:
-      - "27017:27017"
+  neurolab-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neurolab_worker
+    command: ["python", "-m", "src.worker"]
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-admin123}
-      - MONGO_INITDB_DATABASE=neurolab
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - RQ_QUEUES=${RQ_QUEUES:-training,persistence,default}
+      - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-your-token-here}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-neurolab}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-eeg_data}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - PYTHONUNBUFFERED=1
     volumes:
-      - mongodb-data:/data/db
-      - mongodb-config:/data/configdb
+      - ./data:/app/data
+      - ./model:/app/processed
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+      - ./processed:/app/processed
+    depends_on:
+      - redis
+      - influxdb
+      - minio
     networks:
       - neurolab-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # InfluxDB Service
   influxdb:
@@ -97,14 +118,35 @@ services:
       - neurolab-network
     restart: unless-stopped
 
+  # MinIO Object Storage
+  minio:
+    image: minio/minio:RELEASE.2024-01-31T20-20-33Z
+    container_name: neurolab-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - neurolab-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+
 volumes:
-  mongodb-data:
-    driver: local
-  mongodb-config:
-    driver: local
   influxdb-data:
     driver: local
   influxdb-config:
+    driver: local
+  minio-data:
     driver: local
 
 networks:

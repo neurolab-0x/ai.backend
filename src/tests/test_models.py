@@ -11,13 +11,12 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
-    from models.model import (
-        save_trained_model,
+    from src.core.ml.model import (
+        save_model as save_trained_model,
         cosine_annealing_schedule,
         residual_block,
         transformer_block,
         attention_lstm_layer,
-        get_channel_config,
         train_hybrid_model,
         evaluate_model
     )

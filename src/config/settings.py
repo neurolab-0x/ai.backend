@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 PROCESSING_CONFIG = {
     'sample_rate': 0.5,
     'smoothing_window': 5,
@@ -25,13 +31,25 @@ REAL_TIME_CONFIG = {
 }
 
 SECURITY_CONFIG = {
+    # ============================================
+    # AUTHENTICATION CONTROL
+    # ============================================
+    # Authentication is DISABLED by default for development
+    # 
+    # To ENABLE authentication:
+    # 1. Set REQUIRE_AUTH=true environment variable, OR
+    # 2. Change the default value below to True
+    # 
+    # For production: Always set REQUIRE_AUTH=true
+    # ============================================
+    
     # Encryption settings
     'enable_encryption': True,              # Enable data encryption
     'encryption_for_storage': True,         # Encrypt data before storing
     'encryption_for_transit': True,         # Always encrypt responses
     
     # Authentication settings
-    'require_authentication': True,         # Require authentication for API access
+    'require_authentication': os.getenv('REQUIRE_AUTH', 'false').lower() == 'true',  # Can be overridden with REQUIRE_AUTH env var
     'token_expiry_hours': 24,               # JWT token expiry time in hours
     'refresh_token_expiry_days': 30,        # Refresh token expiry in days
     
@@ -58,5 +76,14 @@ LOGGING_CONFIG = {
     'application_log_path': './logs/application.log'
 }
 
-MODEL_VERSION = "nlPT 1-Preview"
-MODEL_NAME = "neurai nlPT"
+MODEL_VERSION = "v3.1.0"
+MODEL_NAME = "NeuroLab Axon Prime"
+ 
+LLM_CONFIG = {
+    'provider': 'groq',
+    'api_key': os.getenv('GROQ_API_KEY'),
+    'model': 'llama-3.1-8b-instant',
+    'temperature': 0.7,
+    'max_tokens': 1024,
+    'timeout': 30
+}

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy import signal
-from src.utils.filters import filter_eeg_bands
+from src.core.processing.filters import filter_eeg_bands
 import logging
 
 logger = logging.getLogger(__name__)

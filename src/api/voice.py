@@ -10,11 +10,9 @@ import logging
 from datetime import datetime
 import io
 
-from src.utils.voice_processor import VoiceProcessor
-
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/voice", tags=["Voice Analysis"])
+router = APIRouter(tags=["Voice Analysis"])
 
 # Initialize voice processor (singleton)
 voice_processor = None
@@ -24,6 +22,7 @@ def get_voice_processor():
     global voice_processor
     if voice_processor is None:
         try:
+            from src.services.voice import VoiceProcessor
             voice_processor = VoiceProcessor()
             logger.info("Voice processor initialized successfully")
         except Exception as e:

@@ -319,7 +319,7 @@ def compute_pca_features(signals: np.ndarray, n_components: int = 3) -> Dict[str
         logger.warning(f"Error in PCA feature computation: {str(e)}")
         return {f'pca_var_ratio_{i+1}': 0 for i in range(n_components)}
 
-def extract_features(df: pd.DataFrame, simple_mode: bool = True) -> pd.DataFrame:
+def extract_features(df: pd.DataFrame, simple_mode: bool = True, overlap: float = 0.0) -> pd.DataFrame:
     """
     Enhanced feature extraction with advanced EEG-specific features
     
@@ -333,6 +333,8 @@ def extract_features(df: pd.DataFrame, simple_mode: bool = True) -> pd.DataFrame
     simple_mode : bool
         If True, extract only 5 core frequency band features (alpha, beta, theta, delta, gamma)
         If False, extract comprehensive 930-feature set
+    overlap : float
+        Overlap fraction between epochs (0.0 to 0.9)
         
     Returns:
     --------
@@ -351,9 +353,9 @@ def extract_features(df: pd.DataFrame, simple_mode: bool = True) -> pd.DataFrame
         is_raw_timeseries = len(df) > 50 and len(eeg_channels) < 100
         
         if is_raw_timeseries:
-            logger.info(f"Processing raw time-series data: {len(df)} timepoints, {len(eeg_channels)} channels")
+            logger.info(f"Processing raw time-series data: {len(df)} timepoints, {len(eeg_channels)} channels with overlap {overlap}")
             # Process as time-series: extract features from each channel's full signal
-            return extract_features_from_timeseries(df, eeg_channels, simple_mode=simple_mode)
+            return extract_features_from_timeseries(df, eeg_channels, simple_mode=simple_mode, overlap=overlap)
         else:
             logger.info(f"Processing pre-computed features: {len(df)} samples")
             # Already features, just return (maybe with some processing)
@@ -393,7 +395,7 @@ def segment_into_epochs(df: pd.DataFrame, epoch_length_samples: int = 257, overl
     logger.info(f"Segmented {len(df)} samples into {len(epochs)} epochs of {epoch_length_samples} samples each")
     return epochs
 
-def extract_features_from_timeseries(df: pd.DataFrame, eeg_channels: List[str], simple_mode: bool = True) -> pd.DataFrame:
+def extract_features_from_timeseries(df: pd.DataFrame, eeg_channels: List[str], simple_mode: bool = True, overlap: float = 0.0) -> pd.DataFrame:
     """
     Extract features from raw time-series EEG data.
     Automatically segments long recordings into epochs and processes each separately.
@@ -407,6 +409,8 @@ def extract_features_from_timeseries(df: pd.DataFrame, eeg_channels: List[str], 
     simple_mode : bool
         If True, extract only 5 core frequency band features averaged across channels
         If False, extract comprehensive per-channel feature set
+    overlap : float
+        Overlap fraction between epochs
         
     Returns:
     --------
@@ -418,7 +422,7 @@ def extract_features_from_timeseries(df: pd.DataFrame, eeg_channels: List[str], 
         epoch_length = 257  # 1.028s at 250Hz
         
         if len(df) >= epoch_length:
-            epochs = segment_into_epochs(df, epoch_length_samples=epoch_length, overlap=0.0)
+            epochs = segment_into_epochs(df, epoch_length_samples=epoch_length, overlap=overlap)
             logger.info(f"Processing {len(epochs)} epochs...")
             
             # Process each epoch
@@ -494,6 +498,14 @@ def extract_features_from_single_epoch(df: pd.DataFrame, eeg_channels: List[str]
             for band_name, powers in all_band_powers.items():
                 feature_data[band_name] = np.mean(powers) if powers else 0
             
+            # Preserve target column if present
+            if 'eeg_state' in df.columns:
+                feature_data['eeg_state'] = df['eeg_state'].iloc[0]
+            elif 'state' in df.columns:
+                feature_data['eeg_state'] = df['state'].iloc[0]
+            elif 'label' in df.columns:
+                feature_data['eeg_state'] = df['label'].iloc[0]
+            
             return feature_data
         
         # Complex mode: Extract comprehensive features per channel
@@ -566,6 +578,14 @@ def extract_features_from_single_epoch(df: pd.DataFrame, eeg_channels: List[str]
             except Exception as e:
                 logger.warning(f"Could not compute PCA features: {str(e)}")
         
+        # Preserve target column if present
+        if 'eeg_state' in df.columns:
+            feature_data['eeg_state'] = df['eeg_state'].iloc[0]
+        elif 'state' in df.columns:
+            feature_data['eeg_state'] = df['state'].iloc[0]
+        elif 'label' in df.columns:
+            feature_data['eeg_state'] = df['label'].iloc[0]
+            
         # Return as dictionary
         return feature_data
         

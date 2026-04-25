@@ -2,74 +2,48 @@
 # NeuroLab EEG Analysis Platform Dependencies
 # ============================================
 
-# ============================================
-# Core Web Framework and Server
-# ============================================
+# Core Framework
 fastapi>=0.115.2
 uvicorn[standard]>=0.30.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
 python-multipart>=0.0.18
 python-dotenv==1.0.1
+minio>=7.2.0
+influxdb-client>=1.36.0
+motor>=3.6.0
+groq>=0.11.0
 
-# ============================================
-# Database Clients
-# ============================================
-influxdb-client==1.38.0
-motor==3.3.1  # Async MongoDB driver (includes pymongo)
-
-# ============================================
-# Data Processing and Analysis
-# ============================================
+# Data Processing & EEG Analysis
 numpy==1.26.4
 pandas==2.2.0
 scipy==1.12.0
+mne>=1.6.0
+pyedflib>=0.1.30
+antropy>=0.1.1
+pywavelets>=1.3.0
 
-# ============================================
-# Machine Learning and Deep Learning
-# ============================================
+# Machine Learning
 scikit-learn==1.5.0
 tensorflow==2.15.1
-# protobuf==4.25.3  # Let tensorflow resolve its own protobuf dependency
 joblib==1.3.0
 imbalanced-learn==0.12.3
+shap>=0.44.0
+lime>=0.2.0
 
-# ============================================
+# Voice Processing
+librosa>=0.10.1
+soundfile>=0.12.1
+
 # Visualization
-# ============================================
 matplotlib==3.8.3
 seaborn==0.13.0
 
-# ============================================
-# HTTP Clients and Async
-# ============================================
-aiofiles==23.2.0
+# Testing (Development)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
 
-# ============================================
-# Security and Authentication
-# ============================================
-python-jose[cryptography]==3.3.0
-cryptography>=42.0.0
-
-# ============================================
-# Gradio Interface
-# ============================================
-gradio==5.31.0
-
-# ============================================
-# Testing Framework (Development Only)
-# ============================================
-pytest==7.4.0
-pytest-asyncio==0.21.0
-pytest-cov==4.1.0
-
-# ============================================
-# PyTorch for Voice Processing
-# ============================================
-torch==2.8.0
-
-antropy>=0.1.1
-
-pywavelets>=1.3.0
-soundfile>=0.12.1
-librosa>=0.10.1
+# Background jobs
+redis>=5.0.0
+rq>=1.16.0
