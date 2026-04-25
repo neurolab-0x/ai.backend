@@ -8,7 +8,7 @@ import numpy as np
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse as StarletteStreamingResponse
 from pydantic import BaseModel, Field, validator
-from typing import List, Union
+from typing import List
 
 from fastapi.concurrency import run_in_threadpool
 
