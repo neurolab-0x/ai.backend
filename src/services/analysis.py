@@ -17,6 +17,8 @@ from src.services.recommendation import NLPRecommendationEngine
 from src.services.database import db_service
 from src.config.settings import PROCESSING_CONFIG, THRESHOLDS
 from src.queue import safe_enqueue
+from src.core.ml.model_types import sanitize_model_type
+from src.services.model_manager import get_model_manager
 
 logger = logging.getLogger(__name__)
 
@@ -34,56 +36,16 @@ class MLProcessor:
             default_model: Name of the default architecture (optional)
         """
         self.default_model = default_model
-        self.models = {}  # Model cache: {model_type: model_object}
         self.recommendation_engine = NLPRecommendationEngine()
-        
-        # Load all available models from the model directory
-        self._load_available_models()
-        
-        # Ensure default model is loaded if specified (even if not on disk, it might be built on fly)
-        if default_model and default_model not in self.models:
-             self._get_or_load_model(default_model)
-             
-        logger.info(f"ML Processor initialized with models: {list(self.models.keys())}")
+        self.model_manager = get_model_manager()
 
-    def _load_available_models(self):
-        """Scan model directory and load all .h5 files"""
-        model_dir = "model"
-        if not os.path.exists(model_dir):
-            logger.warning(f"Model directory '{model_dir}' does not exist")
-            return
-
-        for filename in os.listdir(model_dir):
-            if filename.endswith(".h5") or filename.endswith(".keras"):
-                model_name = os.path.splitext(filename)[0]
-                try:
-                    self._get_or_load_model(model_name)
-                    logger.info(f"Pre-loaded available model: {model_name}")
-                except Exception as e:
-                    logger.error(f"Failed to pre-load model {model_name}: {e}")
-    
-    def _get_or_load_model(self, model_type: str):
-        """Get model from cache or load it if not available"""
-        if model_type not in self.models:
-            model_path = f"model/{model_type}.h5"
+        if default_model:
             try:
-                if os.path.exists(model_path):
-                    model = load_calibrated_model(model_path)
-                    if model is not None:
-                        # Warm up the model
-                        dummy_input = np.zeros((1, 5, 1))
-                        _ = model.predict(dummy_input, verbose=0)
-                        self.models[model_type] = model
-                        logger.info(f"Model {model_type} loaded successfully from {model_path}")
-                    else:
-                        logger.warning(f"Model loading returned None for {model_type}")
-                else:
-                    logger.info(f"Model file not found at {model_path}. Creating base model for {model_type}.")
-                    self.models[model_type] = load_calibrated_model(model_type)
+                self.model_manager.get_model(sanitize_model_type(default_model), warmup=True)
             except Exception as e:
-                logger.error(f"Error loading model {model_type}: {str(e)}")
-                return None
-        return self.models.get(model_type)
+                logger.warning(f"Default model warmup skipped: {e}")
+
+        logger.info("ML Processor initialized")
 
     async def process_eeg_data(
         self, 
@@ -107,8 +69,8 @@ class MLProcessor:
             Dict containing predictions, states, durations, and recommendations
         """
         try:
-            model_type = model_type or self.default_model
-            if not model_type:
+            model_type = sanitize_model_type(model_type or self.default_model)
+            if not model_type:  # pragma: no cover (sanitize_model_type guards)
                 raise ValueError("model_type must be specified")
             logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
@@ -116,7 +78,9 @@ class MLProcessor:
             processed_features = self._preprocess_input(data, overlap=overlap, simple_mode=simple_mode)
             
             # Step 2: Make predictions using the specified model
-            model = self._get_or_load_model(model_type)
+            model = self.model_manager.get_model(model_type, warmup=False)
+            if model is None:
+                raise RuntimeError("Model unavailable (TensorFlow missing or model failed to load)")
             predictions = self._make_predictions(processed_features, model=model)
             
             # Step 3: Apply temporal smoothing

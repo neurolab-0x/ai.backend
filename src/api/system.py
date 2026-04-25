@@ -6,29 +6,25 @@ from src.config.settings import SECURITY_CONFIG
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_model_manager = None
-
-def get_model_manager():
-    global _model_manager
-    if _model_manager is None:
-        from src.services.model_manager import ModelManager
-        _model_manager = ModelManager()
-    return _model_manager
+from src.services.model_manager import get_model_manager
 
 @router.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
         model_manager = get_model_manager()
+        health = model_manager.get_health_status()
         return {
-            "status": model_manager.get_health_status(),
+            "status": health,
             "authentication": {
                 "enabled": SECURITY_CONFIG['require_authentication'],
                 "status": "enabled" if SECURITY_CONFIG['require_authentication'] else "disabled"
             },
             "diagnostics": {
-                "model_loaded": model_manager.model is not None,
-                "tensorflow_available": model_manager.tensorflow_available
+                "tensorflow_available": model_manager.tensorflow_available,
+                "models_loaded": health.get("models_loaded", []),
+                "models_count": health.get("models_count", 0),
+                "model_files": model_manager.list_model_files(),
             }
         }
     except Exception as e:

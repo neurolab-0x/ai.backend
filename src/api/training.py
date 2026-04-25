@@ -13,6 +13,7 @@ from rq.exceptions import NoSuchJobError
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
+from src.core.ml.model_types import sanitize_model_type
 
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,7 @@ class TrainingConfig(BaseModel):
     
     @validator('model_type')
     def validate_model_type(cls, v):
-        valid_types = ['original', 'enhanced_cnn_lstm', 'resnet_lstm', 'transformer']
-        if v not in valid_types:
-            raise ValueError(f"Invalid model type. Must be one of: {valid_types}")
-        return v
+        return sanitize_model_type(v)
 
 
 class TrainingData(BaseModel):

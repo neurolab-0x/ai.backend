@@ -69,7 +69,6 @@ tmp/
 
 # CI/CD
 .github/
-.gitlab-ci.yml
 .travis.yml
 
 # Jupyter

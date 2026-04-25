@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 import logging
 import uvicorn
 
+from src.utils.logging_setup import configure_logging
+
 # Import API routers
 from src.api.training import router as training_router
 from src.api.voice import router as voice_router
@@ -14,15 +16,7 @@ from src.api.analysis import router as analysis_router
 from src.api.system import router as system_router
 from src.api.model import router as model_mgmt_router
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('neurolab_app.log'),
-        logging.StreamHandler()
-    ]
-)
+configure_logging()
 
 logger = logging.getLogger("NeuroLab Axon Prime API")
 

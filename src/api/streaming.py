@@ -1,47 +1,37 @@
-import numpy as np
+import asyncio
+import json
 import logging
 import time
-from fastapi import APIRouter, Request, HTTPException, Depends, Header, status
-from fastapi.responses import JSONResponse
+from typing import Any, AsyncGenerator, Dict, Optional
+
+import numpy as np
+from fastapi import APIRouter, Request, HTTPException, status
+from fastapi.responses import StreamingResponse as StarletteStreamingResponse
 from pydantic import BaseModel, Field, validator
-from typing import List, Dict, Any, Optional, Union
-import base64
+from typing import List
+
+from fastapi.concurrency import run_in_threadpool
 
 from src.api.realtime import process_streaming_chunk, StreamBuffer
 from src.config.settings import REAL_TIME_CONFIG, SECURITY_CONFIG
+from src.core.ml.model_types import sanitize_model_type
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Create instance-specific stream buffers for multiple clients
-client_buffers = {}
+# Per-client streaming buffers and SSE queues
+client_buffers: Dict[str, StreamBuffer] = {}
+client_result_queues: Dict[str, "asyncio.Queue[Dict[str, Any]]"] = {}
+_clients_lock = asyncio.Lock()
 
-# Dummy implementation for missing security features
-def require_user_role(x): return x
-def validate_client_identifier(x): return x
-def validate_eeg_data(x): return True
-_VALID_MODEL_TYPES = {
-    "original",
-    "enhanced_cnn_lstm",
-    "resnet_lstm",
-    "transformer",
-    "trained_model",
-}
 
-def sanitize_model_type(x):
-    if x is None:
-        return None
-    x = str(x).strip()
-    if x in _VALID_MODEL_TYPES:
-        return x
-    raise ValueError("Invalid model_type")
-class DataEncryption:
-    def encrypt_data(self, data):
-        # Not real cryptography; just a stable bytes payload so base64 encoding works.
-        import json
-        return json.dumps(data, default=str).encode("utf-8")
-encryption = DataEncryption()
+def _validate_client_identifier(client_id: str) -> str:
+    if not client_id:
+        raise ValueError("client_id is required")
+    if len(client_id) > 64 or not all(c.isalnum() or c in "_-." for c in client_id):
+        raise ValueError("Invalid client_id format")
+    return client_id
 
 # Enhanced Pydantic models with validation
 class EEGData(BaseModel):
@@ -49,7 +39,6 @@ class EEGData(BaseModel):
     client_id: Optional[str] = Field(None, description="Client identifier")
     model_type: Optional[str] = Field(None, description="Model type to use for processing")
     clean_artifacts: bool = Field(True, description="Whether to clean artifacts")
-    encrypt_response: Optional[bool] = Field(None, description="Whether to encrypt the response")
     include_interpretability: bool = Field(False, description="Whether to include interpretability data")
     
     @validator('eeg_data')
@@ -78,9 +67,9 @@ class EEGData(BaseModel):
     
     @validator('client_id')
     def validate_client_id(cls, v):
-        if v is not None and (len(v) > 64 or not all(c.isalnum() or c in '_-.' for c in v)):
-            raise ValueError("Invalid client ID format")
-        return v
+        if v is None:
+            return v
+        return _validate_client_identifier(v)
     
     @validator('model_type')
     def validate_model_type(cls, v):
@@ -88,28 +77,23 @@ class EEGData(BaseModel):
             return sanitize_model_type(v)
         return v
 
-class StreamingResponse(BaseModel):
+class StreamingInferenceResponse(BaseModel):
     predicted_states: List[int]
     dominant_state: int
     confidence: float
     processing_time_ms: float
     timestamp: str
-    encrypted: bool = False
     interpretability: Optional[Dict[str, Any]] = None
 
-@router.post("/", response_model=StreamingResponse)
+@router.post("/", response_model=StreamingInferenceResponse)
 async def stream_eeg_data(
     request: Request, 
     data: EEGData,
-    current_user: Dict = None,
     client_id: Optional[str] = None
 ):
     """
-    Stream EEG data for real-time processing with security features
+    Stream EEG data for real-time processing.
     
-    - Authenticates and authorizes users
-    - Validates and sanitizes inputs
-    - Encrypts sensitive data
     - Uses client-specific streaming buffers
     - Provides detailed error tracking
     - Can include interpretability data when requested
@@ -118,40 +102,36 @@ async def stream_eeg_data(
     
     try:
         # Determine client identifier (from path, header, or request)
-        client_identifier = data.client_id or client_id or request.client.host
+        client_identifier = data.client_id or client_id or (request.client.host if request.client else "unknown")
+        client_identifier = _validate_client_identifier(client_identifier)
         
         # Log processing request
         logger.info(f"Processing request for client: {client_identifier}")
         
         # Get or create client-specific buffer
-        if client_identifier not in client_buffers:
-            logger.info(f"Creating new stream buffer for client: {client_identifier}")
-            client_buffers[client_identifier] = StreamBuffer()
+        async with _clients_lock:
+            if client_identifier not in client_buffers:
+                logger.info(f"Creating new stream buffer for client: {client_identifier}")
+                client_buffers[client_identifier] = StreamBuffer()
+            if client_identifier not in client_result_queues:
+                client_result_queues[client_identifier] = asyncio.Queue(maxsize=100)
         
         # Convert data format with validation
         eeg_array = np.array(data.eeg_data)
         
-        # Validate EEG data
-        if not validate_eeg_data(eeg_array):
-            logger.warning(f"Invalid EEG data from client: {client_identifier}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid EEG data format or values"
-            )
-        
         # Use streaming if enabled
         stream_buffer = client_buffers[client_identifier] if REAL_TIME_CONFIG['enable_streaming'] else None
             
-        # Sanitize model type to prevent path traversal
-        model_type = sanitize_model_type(data.model_type) if data.model_type else None
-        model_path = f"./model/{model_type}.h5" if model_type else None
+        model_type = sanitize_model_type(data.model_type) if data.model_type else "trained_model"
+        model_path = f"./model/{model_type}.h5"
         
         # Process the data with the optimized pipeline
-        result = process_streaming_chunk(
-            eeg_array, 
-            model_path=model_path,
-            clean_artifacts=data.clean_artifacts,
-            stream_buffer=stream_buffer
+        result = await run_in_threadpool(
+            process_streaming_chunk,
+            eeg_array,
+            model_type,
+            data.clean_artifacts,
+            stream_buffer,
         )
         
         if "error" in result:
@@ -205,32 +185,16 @@ async def stream_eeg_data(
                 logger.warning(f"Failed to generate interpretability data: {str(e)}")
                 result["interpretability"] = {"error": str(e)}
         
-        # Check if response should be encrypted
-        should_encrypt = data.encrypt_response
-        if should_encrypt is None:
-            should_encrypt = SECURITY_CONFIG['encryption_for_transit']
-        
-        # Encrypt response if requested or required
-        if should_encrypt:
-            # Store some metadata outside encryption for client use
-            metadata = {
-                "dominant_state": result["dominant_state"],
-                "confidence": result["confidence"],
-                "timestamp": result["timestamp"]
-            }
-            
-            # Encrypt the full result
-            encrypted_result = encryption.encrypt_data(result)
-            
-            # Return encrypted payload
-            return JSONResponse(content={
-                "encrypted": True,
-                "metadata": metadata,
-                "data": base64.b64encode(encrypted_result).decode()
-            })
-            
-        # Add encryption status to response
-        result["encrypted"] = False
+        # Publish to SSE listeners (best-effort)
+        try:
+            q = client_result_queues.get(client_identifier)
+            if q:
+                if q.full():
+                    _ = q.get_nowait()
+                q.put_nowait(result)
+        except Exception as e:
+            logger.warning(f"Failed to publish SSE update for client {client_identifier}: {str(e)}")
+
         return result
         
     except HTTPException as e:
@@ -245,6 +209,97 @@ async def stream_eeg_data(
         logger.error(f"Error in streaming endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
+@router.post("/chunk", status_code=status.HTTP_202_ACCEPTED)
+async def submit_streaming_chunk(
+    request: Request,
+    data: EEGData,
+    client_id: Optional[str] = None,
+):
+    """
+    Submit an EEG chunk for processing and publish results to the client's SSE stream.
+    """
+    client_identifier = data.client_id or client_id or (request.client.host if request.client else "unknown")
+    try:
+        client_identifier = _validate_client_identifier(client_identifier)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    async with _clients_lock:
+        if client_identifier not in client_buffers:
+            client_buffers[client_identifier] = StreamBuffer()
+        if client_identifier not in client_result_queues:
+            client_result_queues[client_identifier] = asyncio.Queue(maxsize=100)
+
+    eeg_array = np.array(data.eeg_data)
+    model_type = sanitize_model_type(data.model_type) if data.model_type else "trained_model"
+    stream_buffer = client_buffers[client_identifier] if REAL_TIME_CONFIG["enable_streaming"] else None
+    start_time = time.time()
+    result = await run_in_threadpool(
+        process_streaming_chunk,
+        eeg_array,
+        model_type,
+        data.clean_artifacts,
+        stream_buffer,
+    )
+    result["processing_time_ms"] = round((time.time() - start_time) * 1000, 2)
+
+    try:
+        q = client_result_queues.get(client_identifier)
+        if q:
+            if q.full():
+                try:
+                    _ = q.get_nowait()
+                except asyncio.QueueEmpty:
+                    logger.debug("Result queue was empty while attempting to drop oldest item for client '%s'.", client_identifier)
+            try:
+                q.put_nowait(result)
+            except asyncio.QueueFull:
+                logger.warning("Result queue is full; dropping streaming result for client '%s'.", client_identifier)
+    except Exception:
+        logger.exception("Unexpected error while queuing streaming result for client '%s'.", client_identifier)
+
+    return {"status": "queued", "client_id": client_identifier, "timestamp": result.get("timestamp")}
+
+
+@router.get("/sse")
+async def stream_results_sse(
+    request: Request,
+    client_id: str,
+) -> StarletteStreamingResponse:
+    """
+    Server-Sent Events stream for real-time EEG results.
+
+    Clients:
+    1) `POST /api/v1/streaming/chunk` to submit data
+    2) `GET  /api/v1/streaming/sse?client_id=...` to receive results
+    """
+    try:
+        client_identifier = _validate_client_identifier(client_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    async with _clients_lock:
+        if client_identifier not in client_result_queues:
+            client_result_queues[client_identifier] = asyncio.Queue(maxsize=100)
+        q = client_result_queues[client_identifier]
+
+    async def event_gen() -> AsyncGenerator[bytes, None]:
+        # Initial hello event
+        yield f"event: ready\ndata: {json.dumps({'client_id': client_identifier})}\n\n".encode("utf-8")
+
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                item = await asyncio.wait_for(q.get(), timeout=15.0)
+                payload = json.dumps(item, default=str)
+                yield f"event: eeg\ndata: {payload}\n\n".encode("utf-8")
+            except asyncio.TimeoutError:
+                # Keep-alive ping so proxies don't close idle connections.
+                yield b"event: ping\ndata: {}\n\n"
+
+    return StarletteStreamingResponse(event_gen(), media_type="text/event-stream")
+
 @router.post("/clear")
 async def clear_stream_buffer(
     request: Request, 
@@ -253,13 +308,17 @@ async def clear_stream_buffer(
     """Clear client stream buffer"""
     try:
         # Determine client identifier
-        client_identifier = client_id or request.client.host
+        client_identifier = client_id or (request.client.host if request.client else "unknown")
+        client_identifier = _validate_client_identifier(client_identifier)
         
         # Log action
         logger.info(f"Clearing buffer for client {client_identifier}")
         
-        if client_identifier in client_buffers:
-            del client_buffers[client_identifier]
+        async with _clients_lock:
+            if client_identifier in client_buffers:
+                del client_buffers[client_identifier]
+            if client_identifier in client_result_queues:
+                del client_result_queues[client_identifier]
             return {"status": "success", "message": f"Buffer cleared for client {client_identifier}"}
         return {"status": "success", "message": "No buffer found for client"}
     except Exception as e:

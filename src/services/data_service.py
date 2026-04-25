@@ -12,6 +12,7 @@ import threading
 import time
 from src.services.database import db_service
 from src.queue import safe_enqueue
+from src.preprocessing.features import extract_features_from_timeseries
 
 @dataclass
 class EEGDataPoint:
@@ -92,9 +93,42 @@ class DataHandler:
                         data_points.append(data_point)
                         
             elif file_ext == '.edf':
-                # Handle EDF files using appropriate library
-                # This is a placeholder for EDF file handling
-                raise NotImplementedError("EDF file handling not implemented yet")
+                # EDF loading via MNE; return one EEGDataPoint per extracted epoch.
+                try:
+                    import mne
+                except ImportError as e:
+                    raise RuntimeError("EDF support requires 'mne' to be installed") from e
+
+                raw = mne.io.read_raw_edf(file_path, preload=True, verbose="ERROR")
+                sfreq = float(raw.info.get("sfreq", 250.0))
+                data = raw.get_data()  # (channels, samples)
+                ch_names = [str(c) for c in raw.ch_names]
+
+                # Convert to DataFrame for feature extraction (rows=timepoints).
+                df = pd.DataFrame(data.T, columns=ch_names)
+                features_df = extract_features_from_timeseries(df, eeg_channels=ch_names, simple_mode=True, overlap=0.0)
+
+                # Assign approximate timestamps per epoch.
+                epoch_len = 257
+                step = epoch_len
+                start_dt = raw.info.get("meas_date")
+                if isinstance(start_dt, (tuple, list)):
+                    start_dt = start_dt[0]
+                if start_dt is None:
+                    start_dt = datetime.now()
+                start_dt = pd.to_datetime(start_dt).to_pydatetime()
+
+                for epoch_idx, row in features_df.iterrows():
+                    epoch_start_seconds = (epoch_idx * step) / sfreq
+                    ts = start_dt + pd.to_timedelta(epoch_start_seconds, unit="s").to_pytimedelta()
+                    data_points.append(
+                        EEGDataPoint(
+                            timestamp=ts,
+                            features={k: float(v) for k, v in row.to_dict().items() if isinstance(v, (int, float, np.floating, np.integer))},
+                            subject_id=subject_id,
+                            session_id=session_id,
+                        )
+                    )
                 
             else:
                 raise ValueError(f"Unsupported file format: {file_ext}")
@@ -140,9 +174,31 @@ class DataHandler:
         """Process the streaming data in a separate thread."""
         try:
             if isinstance(stream_source, str):
-                # Handle URL-based streaming
-                # This is a placeholder for URL streaming implementation
-                pass
+                # URL-based streaming: expect newline-delimited JSON objects.
+                from urllib.request import Request, urlopen
+
+                req = Request(stream_source, headers={"Accept": "application/x-ndjson"})
+                with urlopen(req, timeout=10) as resp:
+                    for line in resp:
+                        if not self.is_streaming:
+                            break
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line.decode("utf-8").strip())
+                        except Exception:
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        data_point = EEGDataPoint(
+                            timestamp=datetime.now(),
+                            features=payload,
+                            subject_id=subject_id,
+                            session_id=session_id,
+                        )
+                        if self.data_buffer.full():
+                            self.data_buffer.get()
+                        self.data_buffer.put(data_point)
             else:
                 # Handle generator-based streaming
                 for data in stream_source:

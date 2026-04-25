@@ -1,8 +1,6 @@
 import numpy as np
 import logging
 import time
-from collections import deque
-from threading import Lock
 from datetime import datetime
 import pandas as pd
 from src.preprocessing.preprocess import preprocess_data
@@ -17,33 +15,10 @@ from src.services.database import db_service
 from src.queue import safe_enqueue
 import asyncio
 from typing import Dict, Any
+from src.core.ml.model_types import sanitize_model_type
+from src.services.model_manager import get_model_manager
 
 logger = logging.getLogger(__name__)
-
-# Singleton model cache to prevent redundant model loading
-class ModelCache:
-    _instance = None
-    _lock = Lock()
-    _loaded_models = {}
-    
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(ModelCache, cls).__new__(cls)
-        return cls._instance
-    
-    def get_model(self, model_path):
-        """Get model from cache or load it if not available"""
-        if model_path not in self._loaded_models:
-            logger.info(f"Loading model from {model_path} (not in cache)")
-            from src.core.ml.model import load_calibrated_model
-            self._loaded_models[model_path] = load_calibrated_model(model_path)
-        return self._loaded_models[model_path]
-    
-    def clear_cache(self):
-        """Clear model cache"""
-        self._loaded_models = {}
-
 
 # Streaming buffer for continuous data processing
 class StreamBuffer:
@@ -177,10 +152,27 @@ def calculate_adaptive_window(data, min_window=50, max_window=500):
 
 # Initialize components
 data_handler = DataHandler(buffer_size=1000)
+model_manager = get_model_manager()
+
+
+def _ensure_channels_samples(arr: np.ndarray) -> np.ndarray:
+    """
+    Normalize EEG chunk to (channels, samples).
+    Accepts (channels, samples) or (samples, channels).
+    """
+    if arr.ndim == 1:
+        return arr.reshape(1, -1)
+    # Heuristic: channels are usually <= 64
+    if arr.shape[0] <= 64 and arr.shape[0] < arr.shape[1]:
+        return arr
+    if arr.shape[1] <= 64 and arr.shape[1] < arr.shape[0]:
+        return arr.T
+    # Default: assume (channels, samples)
+    return arr
 
 def process_streaming_chunk(
     data: np.ndarray, 
-    model_path: str = None, 
+    model_type: str = "trained_model",
     clean_artifacts: bool = True, 
     stream_buffer=None,
     subject_id: str = "anonymous",
@@ -191,7 +183,7 @@ def process_streaming_chunk(
     
     Args:
         data (np.ndarray): EEG data chunk (channels x samples)
-        model_path (str): Path to model file
+        model_type (str): Architecture identifier to use
         clean_artifacts (bool): Whether to apply artifact cleaning
         stream_buffer (StreamBuffer): Buffer for statefulness
         
@@ -207,23 +199,17 @@ def process_streaming_chunk(
             current_data = stream_buffer.get_window(window_size=None) 
             
         # 2. Preprocessing (Cleaning)
+        current_data = _ensure_channels_samples(np.asarray(current_data))
         if clean_artifacts:
-            # clean_eeg expects (samples, channels) usuallly, or (channels, samples)
-            # Let's check dimensions. Streaming usually sends (channels, samples) or (samples, channels)
-            # We'll assume (samples, channels) for processing pipeline standard
-            if current_data.shape[0] < current_data.shape[1] and current_data.shape[0] <= 64: 
-                 # Likely (channels, samples), transpose
-                 current_data = current_data.T
-            
-            # Simple artifact removal if needed (mock or real)
-            # processed_data = clean_eeg(current_data)
-            processed_data = current_data # Placeholder for robust cleaner
+            # Standard preprocessing first (filters/notch/high/low-pass).
+            processed_data = apply_eeg_preprocessing(current_data, fs=250, notch_freq=60)
+            processed_data, _artifact_report = clean_eeg(processed_data, fs=250)
         else:
             processed_data = current_data
             
         # 3. Model Inference
-        # Load model
-        model = ModelCache().get_model(model_path) if model_path else None
+        model_type = sanitize_model_type(model_type)
+        model = model_manager.get_model(model_type, warmup=False)
         
         if model:
             # Prepare input shape
@@ -273,20 +259,24 @@ def process_streaming_chunk(
                 # LSTM usually flexible on Time, but some models fixed.
                 # enhanced_cnn_lstm usually flexible or fixed window.
                 # Let's assume we pass the whole window as one sample
-                X_input = processed_data.reshape(1, processed_data.shape[0], processed_data.shape[1])
+                # Model expects (batch, time, channels). We treat samples as time.
+                X_input = processed_data.T.reshape(1, processed_data.shape[1], processed_data.shape[0])
                 
             else: # Feature based
-                # Extract features
-                # features = extract_features(processed_data, ...)
-                # Placeholder: Flatten or mean
-                X_input = np.mean(processed_data, axis=0).reshape(1, -1)
+                # Fallback: band features from timeseries
+                df = pd.DataFrame(processed_data.T)
+                df.columns = df.columns.astype(str)
+                features_df = extract_features_from_timeseries(df, eeg_channels=list(df.columns), simple_mode=True)
+                X_input = features_df.values.reshape(-1, features_df.shape[1])
                 
             # Predict
             try:
-                probs = model.predict(X_input, verbose=0)[0]
-                dominant_state = int(np.argmax(probs))
-                confidence = float(np.max(probs))
-                predicted_states = [dominant_state] # Simplify for chunk
+                probs = model.predict(X_input, verbose=0)
+                if probs.ndim == 1:
+                    probs = probs.reshape(1, -1)
+                predicted_states = np.argmax(probs, axis=1).astype(int).tolist()
+                dominant_state = int(np.bincount(predicted_states).argmax()) if predicted_states else 0
+                confidence = float(np.max(np.mean(probs, axis=0))) if len(probs) else 0.0
             except Exception as e:
                 logger.error(f"Inference failed: {e}")
                 dominant_state = 0
