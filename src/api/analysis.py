@@ -62,6 +62,8 @@ async def process_uploaded_file(
             result = base64.b64encode(str(result).encode()).decode()
             
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing upload: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -89,6 +91,8 @@ async def analyze_eeg_data(
             simple_mode=simple_mode
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error analyzing data: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -118,6 +122,8 @@ async def generate_detailed_report(
             simple_mode=simple_mode
         )
         return report
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating detailed report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -149,6 +155,8 @@ async def get_recommendations(
             "count": len(recommendations),
             "timestamp": datetime.now().isoformat()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -187,6 +195,8 @@ async def get_decision_support(
                 "Practice guided meditation during high-stress periods"
             ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in decision support: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -228,6 +238,8 @@ async def get_chat_response(
             max_tokens=1000  # Increased for potentially more detailed personalized responses
         )
         return {"response": completion.choices[0].message.content}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in chat response: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -246,6 +258,8 @@ async def generate_notes(
             notes += f"- {rec}\n"
             
         return {"notes": notes}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating notes: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
