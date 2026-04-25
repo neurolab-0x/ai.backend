@@ -192,8 +192,8 @@ async def stream_eeg_data(
                 if q.full():
                     _ = q.get_nowait()
                 q.put_nowait(result)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to publish SSE update for client {client_identifier}: {str(e)}")
 
         return result
         
