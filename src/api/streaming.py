@@ -6,7 +6,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 import numpy as np
 from fastapi import APIRouter, Request, HTTPException, status
-from fastapi.responses import JSONResponse, StreamingResponse as StarletteStreamingResponse
+from fastapi.responses import StreamingResponse as StarletteStreamingResponse
 from pydantic import BaseModel, Field, validator
 from typing import List
 
