@@ -5,6 +5,7 @@ import base64
 from datetime import datetime
 
 from src.utils.files import validate_file, save_uploaded_file
+from src.core.ml.model_types import sanitize_model_type
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +31,10 @@ async def process_uploaded_file(
     """Process uploaded EEG file or JSON data"""
     try:
         ml_processor = get_ml_processor()
+        try:
+            model_type = sanitize_model_type(model_type)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         if file:
             validate_file(file)
             file_location = await save_uploaded_file(file)
@@ -71,6 +76,10 @@ async def analyze_eeg_data(
     """Analyze EEG data and return results"""
     try:
         ml_processor = get_ml_processor()
+        try:
+            model_type = sanitize_model_type(model_type)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         result = await ml_processor.process_eeg_data(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
@@ -95,6 +104,10 @@ async def generate_detailed_report(
     """Generate a detailed analysis report with comprehensive recommendations"""
     try:
         ml_processor = get_ml_processor()
+        try:
+            model_type = sanitize_model_type(model_type)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         report = await ml_processor.generate_detailed_report(
             data,
             subject_id=data.get('subject_id', 'anonymous'),
