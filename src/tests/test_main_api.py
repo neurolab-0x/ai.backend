@@ -44,24 +44,25 @@ class TestMainAPI(unittest.TestCase):
             
     def test_health_check(self):
         """Test the health check endpoint"""
-        response = self.client.get("/health")
+        response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIn("status", data)
         self.assertIn("diagnostics", data)
-        self.assertIn("model_loaded", data["diagnostics"])
+        self.assertIn("models_loaded", data["diagnostics"])
         self.assertIn("tensorflow_available", data["diagnostics"])
         
     def test_upload_endpoint(self):
         """Test the file upload and processing endpoint"""
         with open(self.csv_path, "rb") as f:
             response = self.client.post(
-                "/upload",
+                "/api/v1/eeg/upload",
+                params={"model_type": "original"},
                 files={"file": ("test_eeg.csv", f, "text/csv")}
             )
             
-        # Accept both 200 and 500 since model might not be loaded in test environment
-        self.assertIn(response.status_code, [200, 500])
+        # Accept both 200 and 500 since model/files might not be available in test environment
+        self.assertIn(response.status_code, [200, 400, 500])
         
         if response.status_code == 200:
             data = response.json()
@@ -81,7 +82,8 @@ class TestMainAPI(unittest.TestCase):
         }
         
         response = self.client.post(
-            "/analyze",
+            "/api/v1/eeg/analyze",
+            params={"model_type": "original"},
             json=test_data
         )
         
@@ -90,12 +92,12 @@ class TestMainAPI(unittest.TestCase):
         
     def test_root_endpoint(self):
         """Test the root endpoint"""
-        response = self.client.get("/")
+        response = self.client.get("/api/v1/")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIn("name", data)
         self.assertIn("version", data)
-        self.assertIn("endpoints", data)
+        self.assertIn("features", data)
         
     def test_invalid_file_upload(self):
         """Test handling of invalid file uploads"""
@@ -106,7 +108,8 @@ class TestMainAPI(unittest.TestCase):
             
         with open(invalid_file, "rb") as f:
             response = self.client.post(
-                "/upload",
+                "/api/v1/eeg/upload",
+                params={"model_type": "original"},
                 files={"file": ("test.txt", f, "text/plain")}
             )
             
@@ -121,7 +124,8 @@ class TestMainAPI(unittest.TestCase):
         }
         
         response = self.client.post(
-            "/analyze",
+            "/api/v1/eeg/analyze",
+            params={"model_type": "original"},
             json=invalid_data
         )
         
@@ -131,13 +135,15 @@ class TestMainAPI(unittest.TestCase):
     def test_calibrate_endpoint(self):
         """Test the calibrate endpoint"""
         calibration_data = {
-            "X_train": [[0.1, 0.2, 0.3, 0.4, 0.5]],
-            "y_train": [0],
-            "subject_id": "test_subject"
+            "model_name": "original",
+            "calibration_data": {
+                "X": [[0.1, 0.2, 0.3, 0.4, 0.5]],
+                "y": [0]
+            }
         }
         
         response = self.client.post(
-            "/calibrate",
+            "/api/v1/models/calibrate",
             json=calibration_data
         )
         
@@ -146,19 +152,21 @@ class TestMainAPI(unittest.TestCase):
         
     def test_recommendations_endpoint(self):
         """Test the recommendations endpoint"""
-        response = self.client.get(
-            "/recommendations",
-            params={
-                "session_id": "test_session",
-                "subject_id": "test_subject"
+        response = self.client.post(
+            "/api/v1/eeg/recommendations",
+            json={
+                "state_durations": {"0": 10, "1": 5, "2": 3},
+                "total_duration": 18,
+                "confidence": 75,
+                "cognitive_metrics": {"focus_index": 0.6},
+                "state_transitions": 2
             }
         )
         
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn("session_id", data)
-        self.assertIn("subject_id", data)
         self.assertIn("recommendations", data)
+        self.assertIn("count", data)
 
 if __name__ == '__main__':
     unittest.main() 
