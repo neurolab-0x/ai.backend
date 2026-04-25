@@ -1,64 +1,91 @@
-from typing import List, Dict
-import os
-import logging
-import numpy as np
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
-import tensorflow as tf
+import logging
+import os
+from threading import Lock
+from typing import Dict, List, Optional
+
+import numpy as np
+
 from src.core.ml.model import load_calibrated_model
+from src.core.ml.model_types import sanitize_model_type, VALID_MODEL_TYPES
 
 logger = logging.getLogger(__name__)
 
 class ModelManager:
-    def __init__(self, model_types: List[str] = ["enhanced_cnn_lstm", "resnet_lstm", "transformer", "original"]):
-        self.model_types = model_types
-        self.models = {}
+    """
+    Centralized model registry/cache.
+
+    This replaces multiple ad-hoc caches spread across the codebase.
+    """
+
+    def __init__(self, model_types: Optional[List[str]] = None, model_dir: str = "model"):
+        self.model_types = model_types or sorted(VALID_MODEL_TYPES)
+        self.model_dir = model_dir
+        self.models: Dict[str, object] = {}
         self.tensorflow_available = False
+        self._lock = Lock()
         self._initialize_tensorflow()
         
     def _initialize_tensorflow(self):
         """Initialize TensorFlow and load models if available"""
         try:
-            import tensorflow as tf
+            import tensorflow as _tf  # noqa: F401
             self.tensorflow_available = True
             logger.info("TensorFlow loaded successfully")
-            self._load_models()
         except ImportError as e:
             logger.warning(f"TensorFlow import failed: {str(e)}")
             self.tensorflow_available = False
     
-    def _load_models(self):
-        """Load and warm up all configured models"""
+    def _model_path(self, model_type: str) -> str:
+        model_type = sanitize_model_type(model_type)
+        return os.path.join(self.model_dir, f"{model_type}.h5")
+
+    def list_model_files(self) -> List[str]:
+        """List model filenames present on disk."""
+        if not os.path.exists(self.model_dir):
+            return []
+        return sorted([f for f in os.listdir(self.model_dir) if f.endswith(".h5") or f.endswith(".keras")])
+
+    def get_model(self, model_type: str, warmup: bool = True):
+        """
+        Load a model once and cache it.
+        model_type is a validated architecture identifier (not an arbitrary path).
+        """
         if not self.tensorflow_available:
-            return
-            
-        for model_type in self.model_types:
-            model_path = f"./model/{model_type}.h5"
+            return None
+
+        model_type = sanitize_model_type(model_type)
+        with self._lock:
+            if model_type in self.models:
+                return self.models[model_type]
+
+            model_path = self._model_path(model_type)
+            logger.info(f"Loading model '{model_type}' from {model_path}")
+            model = load_calibrated_model(model_path)
+            if model is None:
+                logger.error(f"Failed to load model '{model_type}'")
+                return None
+
+            if warmup:
+                try:
+                    dummy_input = np.zeros((1, *model.input_shape[1:]))
+                    _ = model.predict(dummy_input, verbose=0)
+                except Exception as e:
+                    logger.warning(f"Model '{model_type}' warmup failed: {e}")
+
+            self.models[model_type] = model
+            return model
+
+    def warmup_all(self) -> None:
+        """Best-effort warmup of all known model types."""
+        for mt in self.model_types:
             try:
-                logger.info(f"Initializing {model_type} from {model_path}")
-                if os.path.exists(model_path):
-                    model = load_calibrated_model(model_path)
-                    if model is not None:
-                        # Compile to avoid warnings/errors during inference
-                        model.compile(
-                            optimizer='adam',
-                            loss='categorical_crossentropy',
-                            metrics=['accuracy']
-                        )
-                        # Warm up the model
-                        try:
-                            dummy_input = np.zeros((1, *model.input_shape[1:]))
-                            _ = model.predict(dummy_input, verbose=0)
-                            self.models[model_type] = model
-                            logger.info(f"Model {model_type} loaded and warmed up")
-                        except Exception as e:
-                            logger.warning(f"Model {model_type} loaded but warmup failed: {e}")
-                            self.models[model_type] = model
-                    else:
-                        logger.error(f"Failed to load or create model {model_type}")
-                else:
-                    logger.info(f"Model file not found at {model_path}. Skipping pre-load.")
+                self.get_model(mt, warmup=True)
             except Exception as e:
-                logger.error(f"Model initialization failed for {model_type}: {str(e)}")
+                logger.warning(f"Warmup failed for model '{mt}': {e}")
     
     def get_health_status(self) -> dict:
         """Get model health status"""
@@ -85,3 +112,13 @@ class ModelManager:
                 status["health_check_error"] = str(e)
         
         return status
+
+
+_global_manager: Optional[ModelManager] = None
+
+
+def get_model_manager() -> ModelManager:
+    global _global_manager
+    if _global_manager is None:
+        _global_manager = ModelManager()
+    return _global_manager
