@@ -247,10 +247,16 @@ async def submit_streaming_chunk(
         q = client_result_queues.get(client_identifier)
         if q:
             if q.full():
-                _ = q.get_nowait()
-            q.put_nowait(result)
+                try:
+                    _ = q.get_nowait()
+                except asyncio.QueueEmpty:
+                    logger.debug("Result queue was empty while attempting to drop oldest item for client '%s'.", client_identifier)
+            try:
+                q.put_nowait(result)
+            except asyncio.QueueFull:
+                logger.warning("Result queue is full; dropping streaming result for client '%s'.", client_identifier)
     except Exception:
-        pass
+        logger.exception("Unexpected error while queuing streaming result for client '%s'.", client_identifier)
 
     return {"status": "queued", "client_id": client_identifier, "timestamp": result.get("timestamp")}
 
