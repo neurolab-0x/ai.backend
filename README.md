@@ -39,6 +39,7 @@ Important variables:
 - `OPENROUTER_MODEL` (default: `openai/gpt-4o-mini`)
 - `OPENROUTER_SITE_URL` (optional, sent as OpenRouter referer)
 - `OPENROUTER_APP_NAME` (optional, sent as OpenRouter title)
+- `ENABLE_CHAT_GRPC` (default: `false`; keeps the old gRPC chat server disabled)
 - `REQUIRE_AUTH` (default: `false`)
 - `ENABLE_DATABASES` (default: `true`)
 - `MONGODB_URI`, `MONGODB_DB`
@@ -129,6 +130,7 @@ Defined in `.github/workflows/`:
 1. Submit a request with `POST /api/v1/eeg/chat/submit`.
 2. Open `GET /api/v1/eeg/chat/sse?job_id=...` to receive `queued`, `started`, `context_retrieved`, `generating_response`, `completed`, or `failed` events.
 3. Poll `GET /api/v1/eeg/chat/status/{job_id}` if SSE is not available.
+4. Set `generate_title=true` only if you want a follow-up `title_generated` event; it is no longer part of the main answer critical path.
 
 Run an RQ worker for the new queue:
 

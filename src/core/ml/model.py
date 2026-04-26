@@ -218,9 +218,15 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     _require_tensorflow()
     batch_size = kwargs.get('batch_size', 32)
     epochs = kwargs.get('epochs', 30)
+    validation_data = kwargs.get('validation_data')
     
     if len(X_train.shape) == 2:
         X_train = X_train.reshape(-1, X_train.shape[1], 1)
+    if validation_data is not None:
+        X_val, y_val = validation_data
+        if len(X_val.shape) == 2:
+            X_val = X_val.reshape(-1, X_val.shape[1], 1)
+        validation_data = (X_val, y_val)
     
     input_shape = (X_train.shape[1], 1)
     num_classes = len(np.unique(y_train))
@@ -255,7 +261,8 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         X_train, y_train,
         epochs=epochs,
         batch_size=batch_size,
-        validation_split=0.2,
+        validation_split=0.0 if validation_data is not None else 0.2,
+        validation_data=validation_data,
         class_weight=class_weight_dict,
         callbacks=callbacks,
         verbose=1
@@ -280,17 +287,25 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
         if not TF_AVAILABLE:
             logger.warning("TensorFlow is not installed; calibrated models are unavailable")
             return None
-        # standardizing path if only architecture name is provided
+
+        base_dir = os.path.abspath("model")
+
+        # Standardize path if only architecture name is provided
         if not model_path.endswith('.h5'):
             model_path = os.path.join("model", f"{model_path}.h5")
-        
-        if not os.path.exists(model_path):
-            logger.warning(f"Model file not found at {model_path}. Creating base model.")
+
+        normalized_model_path = os.path.abspath(os.path.normpath(model_path))
+        if os.path.commonpath([base_dir, normalized_model_path]) != base_dir:
+            logger.warning(f"Rejected model path outside model directory: {model_path}")
+            return None
+
+        if not os.path.exists(normalized_model_path):
+            logger.warning(f"Model file not found at {normalized_model_path}. Creating base model.")
             # Default architecture if not specified in path
-            arch = os.path.basename(model_path).replace('.h5', '') if '.h5' in model_path else 'enhanced_cnn_lstm'
+            arch = os.path.basename(normalized_model_path).replace('.h5', '') if '.h5' in normalized_model_path else 'enhanced_cnn_lstm'
             return build_model(arch)
-        model = tf.keras.models.load_model(model_path)
-        logger.info(f"Model loaded successfully from {model_path}")
+        model = tf.keras.models.load_model(normalized_model_path)
+        logger.info(f"Model loaded successfully from {normalized_model_path}")
         return model
     except Exception as e:
         logger.error(f"Error loading model from {model_path}: {str(e)}")

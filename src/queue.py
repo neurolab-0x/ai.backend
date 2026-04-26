@@ -77,6 +77,7 @@ def publish_job_event(
     event: str,
     payload: Optional[dict] = None,
     ttl_seconds: int = 60 * 60 * 24,
+    persist_state: bool = True,
 ) -> dict:
     message = {
         "job_id": job_id,
@@ -88,7 +89,8 @@ def publish_job_event(
     raw_message = json.dumps(message, default=str)
     try:
         r = get_redis()
-        r.setex(_job_state_key(category, job_id), ttl_seconds, raw_message)
+        if persist_state:
+            r.setex(_job_state_key(category, job_id), ttl_seconds, raw_message)
         r.publish(job_event_channel(category, job_id), raw_message)
     except Exception as e:
         logger.warning(f"Failed to publish event for {category} job_id={job_id}: {e}")

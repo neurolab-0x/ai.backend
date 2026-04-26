@@ -5,13 +5,13 @@ from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException, Request, status
 from fastapi.responses import StreamingResponse as StarletteStreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import logging
 import base64
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
-from src.services.chat import generate_chat_exchange, generate_conversation_title
+from src.services.chat import generate_conversation_title
 from src.queue import get_async_redis, publish_job_event, read_job_state
 
 try:
@@ -31,6 +31,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+TERMINAL_CHAT_EVENTS = {"completed", "failed"}
+MAX_CHAT_MESSAGE_CHARS = 8000
+MAX_CHAT_HISTORY_ITEMS = 20
+MAX_CHAT_HISTORY_ITEM_CHARS = 4000
 
 _ml_processor = None
 
@@ -51,13 +55,31 @@ def require_rq() -> None:
 
 
 class ChatJobRequest(BaseModel):
-    message: str = Field(..., min_length=1, description="User message to send to the assistant")
+    message: str = Field(..., min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS, description="User message to send to the assistant")
     subject_id: Optional[str] = Field(None, description="User ID for personalized retrieval")
     conversation_id: Optional[str] = Field(None, description="Backend conversation identifier")
     history: Optional[List[Dict[str, Any]]] = Field(None, description="Recent conversation history")
     current_title: Optional[str] = Field(None, description="Current conversation title")
     include_health_data: bool = Field(True, description="Whether health history should be retrieved")
     context_limit: int = Field(8, ge=1, le=25, description="How many history items to retrieve from storage")
+    generate_title: bool = Field(False, description="Generate a suggested title after the main answer is ready")
+
+    @field_validator("history")
+    @classmethod
+    def validate_history(cls, value: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        if value is None:
+            return value
+        if len(value) > MAX_CHAT_HISTORY_ITEMS:
+            raise ValueError(f"history cannot exceed {MAX_CHAT_HISTORY_ITEMS} items")
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError("history items must be objects")
+            content = str(item.get("content", ""))
+            if len(content) > MAX_CHAT_HISTORY_ITEM_CHARS:
+                raise ValueError(
+                    f"history item content cannot exceed {MAX_CHAT_HISTORY_ITEM_CHARS} characters"
+                )
+        return value
 
 @router.post('/upload', summary="Advanced EEG analysis", response_description="Cognitive state report")
 async def process_uploaded_file(
@@ -297,6 +319,7 @@ async def get_chat_job_status(job_id: str):
 
     return {
         "job_id": job_id,
+        "status": (state or {}).get("event") or rq_status,
         "rq_status": rq_status,
         "state": state,
     }
@@ -314,9 +337,12 @@ async def stream_chat_job_events(
         pubsub = redis.pubsub()
         channel = f"neurolab:job:events:chat:{job_id}"
         try:
+            await pubsub.subscribe(channel)
             state = read_job_state("chat", job_id)
             yield f"event: ready\ndata: {json.dumps({'job_id': job_id, 'state': state}, default=str)}\n\n".encode("utf-8")
-            await pubsub.subscribe(channel)
+            if state and state.get("event") in TERMINAL_CHAT_EVENTS:
+                yield f"event: {state['event']}\ndata: {json.dumps(state, default=str)}\n\n".encode("utf-8")
+                return
 
             while True:
                 if await request.is_disconnected():
@@ -329,6 +355,8 @@ async def stream_chat_job_events(
                     payload = json.loads(data)
                     event_name = payload.get("event", "message")
                     yield f"event: {event_name}\ndata: {json.dumps(payload, default=str)}\n\n".encode("utf-8")
+                    if event_name in TERMINAL_CHAT_EVENTS:
+                        break
                 else:
                     yield b"event: ping\ndata: {}\n\n"
                 await asyncio.sleep(0.05)

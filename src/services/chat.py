@@ -7,9 +7,12 @@ from src.services.llm import get_async_llm_client
 
 logger = logging.getLogger(__name__)
 
+MAX_HISTORY_ITEMS = 20
+MAX_HISTORY_CONTENT_CHARS = 4000
+
 def normalize_history(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
-    for item in history or []:
+    for item in (history or [])[-MAX_HISTORY_ITEMS:]:
         if not isinstance(item, dict):
             continue
 
@@ -17,7 +20,7 @@ def normalize_history(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str,
         if role not in {"user", "assistant", "system"}:
             continue
 
-        content = str(item.get("content", "")).strip()
+        content = str(item.get("content", "")).strip()[:MAX_HISTORY_CONTENT_CHARS]
         if not content:
             continue
 
@@ -146,6 +149,7 @@ async def generate_chat_exchange(
     current_title: Optional[str] = None,
     include_health_data: bool = True,
     retrieval_context: Optional[Dict[str, Any]] = None,
+    generate_title: bool = False,
 ) -> Dict[str, Any]:
     context = retrieval_context or await retrieve_chat_context(
         subject_id=subject_id,
@@ -183,21 +187,25 @@ async def generate_chat_exchange(
             max_tokens=700,
         )
 
-    title_history = [
-        *normalized_history,
-        {"role": "user", "content": message.strip()},
-        {"role": "assistant", "content": response},
-    ]
-    suggested_title = await generate_conversation_title(
-        title_history,
-        subject_id=subject_id,
-        current_title=current_title,
-    )
+    suggested_title = current_title
+    should_update_title = False
+    if generate_title:
+        title_history = [
+            *normalized_history,
+            {"role": "user", "content": message.strip()},
+            {"role": "assistant", "content": response},
+        ]
+        suggested_title = await generate_conversation_title(
+            title_history,
+            subject_id=subject_id,
+            current_title=current_title,
+        )
+        should_update_title = bool(suggested_title and suggested_title != (current_title or ""))
 
     return {
         "response": response,
         "suggested_title": suggested_title,
-        "should_update_title": bool(suggested_title and suggested_title != (current_title or "")),
+        "should_update_title": should_update_title,
         "retrieved_context": {
             "history_items": len(normalized_history),
             "health_history_items": len(context["health_history"]),
