@@ -72,7 +72,7 @@ async def calibrate_model_endpoint(
             try:
                 # Load the model
                 logger.info(f"Loading model: {name}")
-                model = load_calibrated_model(model_path)
+                model = load_calibrated_model(name)
                 
                 if model is None:
                     results[name] = {"status": "error", "message": "Failed to load model"}
