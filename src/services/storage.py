@@ -98,6 +98,38 @@ class MinioStorageService:
             logger.error(f"Error generating URL: {e}")
             return None
 
+    def download_file(self, bucket_key: str, object_name: str, destination_path: str) -> Optional[str]:
+        """Download an object from MinIO to a local path."""
+        if not self.enabled or not self.client:
+            logger.warning("MinIO storage disabled or not initialized")
+            return None
+
+        bucket_name = MINIO_CONFIG['buckets'].get(bucket_key)
+        if not bucket_name:
+            logger.error(f"Invalid bucket key: {bucket_key}")
+            return None
+
+        try:
+            os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+            self.client.fget_object(bucket_name, object_name, destination_path)
+            logger.info(f"Downloaded {bucket_name}/{object_name} to {destination_path}")
+            return destination_path
+        except S3Error as e:
+            logger.error(f"MinIO download error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error downloading from MinIO: {e}")
+            return None
+
+    def download_artifact(self, descriptor: Dict[str, Any], destination_path: str) -> Optional[str]:
+        """Download a persisted artifact descriptor to a local path."""
+        bucket_key = descriptor.get("bucket_key") if isinstance(descriptor, dict) else None
+        object_name = descriptor.get("object_name") if isinstance(descriptor, dict) else None
+        if not bucket_key or not object_name:
+            logger.error("Artifact descriptor missing bucket_key/object_name")
+            return None
+        return self.download_file(bucket_key, object_name, destination_path)
+
     def build_artifact_descriptor(
         self,
         bucket_key: str,

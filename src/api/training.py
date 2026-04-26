@@ -166,6 +166,16 @@ def _get_storage_service() -> MinioStorageService:
     return _storage_service
 
 
+def _require_training_storage() -> MinioStorageService:
+    storage = _get_storage_service()
+    if not storage.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Training storage is unavailable. MinIO must be enabled for training jobs.",
+        )
+    return storage
+
+
 def _hydrate_artifacts(artifacts: Any) -> Any:
     if not isinstance(artifacts, (dict, list)):
         return artifacts
@@ -239,13 +249,36 @@ async def train_model(
         data.config = _sanitize_training_config_ids(data.config)
 
         job_id = f"train_{uuid4().hex}"
-        # Persist arrays to disk to avoid pickling huge payloads into Redis.
+        storage = _require_training_storage()
+        # Stage bundle locally only long enough to upload it to MinIO.
         os.makedirs("temp", exist_ok=True)
         temp_npz = os.path.join("temp", f"{job_id}.npz")
         if X_test is None or y_test is None:
             np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train)
         else:
             np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+        uploaded_bundle = storage.upload_file(temp_npz, "training", f"runs/{job_id}/input/training_bundle.npz")
+        if not uploaded_bundle:
+            try:
+                os.remove(temp_npz)
+            except OSError:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to upload training bundle to object storage.",
+            )
+        bundle_descriptor = storage.build_artifact_descriptor(
+            "training",
+            uploaded_bundle,
+            label="Training bundle",
+            kind="dataset_bundle",
+            content_type="application/octet-stream",
+            metadata={"model_type": model_type, "source": "api_train_payload"},
+        )
+        try:
+            os.remove(temp_npz)
+        except OSError:
+            pass
 
         run_record = {
             "job_id": job_id,
@@ -259,7 +292,7 @@ async def train_model(
             "session_id": data.config.session_id,
             "config": {**data.config.dict(), "run_type": "training_data"},
             "artifacts": {
-                "staging_bundle_name": os.path.basename(temp_npz),
+                "objects": {"training_bundle": bundle_descriptor},
             },
             "metrics": None,
             "error": None,
@@ -271,8 +304,8 @@ async def train_model(
         try:
             q = get_queue("training")
             job = q.enqueue(
-                "src.jobs.training.train_from_npz",
-                temp_npz,
+                "src.jobs.training.train_from_bundle_object",
+                bundle_descriptor,
                 {**data.config.dict(), "run_type": "training_data", "source": "api_train_payload"},
                 model_type,
                 job_id=job_id,
@@ -280,10 +313,6 @@ async def train_model(
                 result_ttl=60 * 60 * 24,
             )
         except Exception:
-            try:
-                os.remove(temp_npz)
-            except OSError:
-                pass
             await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)
@@ -322,10 +351,11 @@ async def train_model_from_file(
     try:
         require_rq()
         model_type = _sanitize_model_type_or_400(model_type)
+        storage = _require_training_storage()
         # Validate file
         validate_file(file)
         
-        # Save uploaded file
+        # Save uploaded file only long enough to push it into object storage.
         file_location = await save_uploaded_file(file)
         
         # Parse config if provided
@@ -347,6 +377,28 @@ async def train_model_from_file(
         training_config = _sanitize_training_config_ids(training_config)
 
         job_id = f"train_file_{uuid4().hex}"
+        uploaded_dataset = storage.upload_file(
+            file_location,
+            "training",
+            f"runs/{job_id}/input/{os.path.basename(file_location)}",
+        )
+        try:
+            os.remove(file_location)
+        except OSError:
+            pass
+        if not uploaded_dataset:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to upload dataset file to object storage.",
+            )
+        dataset_descriptor = storage.build_artifact_descriptor(
+            "training",
+            uploaded_dataset,
+            label="Uploaded training dataset",
+            kind="uploaded_dataset",
+            content_type=file.content_type or "application/octet-stream",
+            metadata={"model_type": model_type, "original_filename": file.filename},
+        )
         run_record = {
             "job_id": job_id,
             "status": "queued",
@@ -360,6 +412,7 @@ async def train_model_from_file(
             "config": {**training_config.dict(), "run_type": "training_file"},
             "artifacts": {
                 "uploaded_file_name": file.filename,
+                "objects": {"uploaded_dataset": dataset_descriptor},
             },
             "metrics": None,
             "error": None,
@@ -371,8 +424,8 @@ async def train_model_from_file(
         try:
             q = get_queue("training")
             job = q.enqueue(
-                "src.jobs.training.train_from_file",
-                file_location,
+                "src.jobs.training.train_from_file_object",
+                dataset_descriptor,
                 {**training_config.dict(), "run_type": "training_file", "source": "uploaded_dataset_file"},
                 model_type,
                 job_id=job_id,
@@ -380,10 +433,6 @@ async def train_model_from_file(
                 result_ttl=60 * 60 * 24,
             )
         except Exception:
-            try:
-                os.remove(file_location)
-            except OSError:
-                pass
             await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)
@@ -495,6 +544,7 @@ async def compare_models(
     """
     try:
         require_rq()
+        storage = _require_training_storage()
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -512,6 +562,24 @@ async def compare_models(
         job_id = f"compare_{uuid4().hex}"
         temp_npz = os.path.join("temp", f"{job_id}.npz")
         np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+        uploaded_bundle = storage.upload_file(temp_npz, "training", f"runs/{job_id}/input/comparison_bundle.npz")
+        try:
+            os.remove(temp_npz)
+        except OSError:
+            pass
+        if not uploaded_bundle:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to upload comparison bundle to object storage.",
+            )
+        bundle_descriptor = storage.build_artifact_descriptor(
+            "training",
+            uploaded_bundle,
+            label="Comparison bundle",
+            kind="dataset_bundle",
+            content_type="application/octet-stream",
+            metadata={"source": "api_compare_payload"},
+        )
 
         run_record = {
             "job_id": job_id,
@@ -524,7 +592,7 @@ async def compare_models(
             "subject_id": data.config.subject_id if data.config else None,
             "session_id": data.config.session_id if data.config else None,
             "config": {"n_repeats": n_repeats, "run_type": "comparison", **(data.config.dict() if data.config else {})},
-            "artifacts": {"staging_bundle_name": os.path.basename(temp_npz)},
+            "artifacts": {"objects": {"comparison_bundle": bundle_descriptor}},
             "metrics": None,
             "error": None,
             "started_at": datetime.now(),
@@ -535,18 +603,15 @@ async def compare_models(
         try:
             q = get_queue("training")
             job = q.enqueue(
-                "src.jobs.training.compare_models_from_npz",
-                temp_npz,
+                "src.jobs.training.compare_models_from_object",
+                bundle_descriptor,
                 n_repeats=n_repeats,
+                config={"run_type": "comparison", **(data.config.dict() if data.config else {})},
                 job_id=job_id,
                 job_timeout=60 * 60 * 6,
                 result_ttl=60 * 60 * 24,
             )
         except Exception:
-            try:
-                os.remove(temp_npz)
-            except OSError:
-                pass
             await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)

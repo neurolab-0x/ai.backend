@@ -614,7 +614,7 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
     try:
         if storage_service.enabled:
             try:
-                object_name = storage_service.upload_file(file_path, "training", f"{job_id}/input/{os.path.basename(file_path)}")
+                object_name = storage_service.upload_file(file_path, "training", f"runs/{job_id}/input/{os.path.basename(file_path)}")
                 if object_name:
                     artifacts.setdefault("objects", {})
                     artifacts["objects"]["uploaded_dataset"] = storage_service.build_artifact_descriptor(
