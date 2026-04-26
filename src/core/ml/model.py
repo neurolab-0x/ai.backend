@@ -280,17 +280,25 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
         if not TF_AVAILABLE:
             logger.warning("TensorFlow is not installed; calibrated models are unavailable")
             return None
-        # standardizing path if only architecture name is provided
+
+        base_dir = os.path.abspath("model")
+
+        # Standardize path if only architecture name is provided
         if not model_path.endswith('.h5'):
             model_path = os.path.join("model", f"{model_path}.h5")
-        
-        if not os.path.exists(model_path):
-            logger.warning(f"Model file not found at {model_path}. Creating base model.")
+
+        normalized_model_path = os.path.abspath(os.path.normpath(model_path))
+        if os.path.commonpath([base_dir, normalized_model_path]) != base_dir:
+            logger.warning(f"Rejected model path outside model directory: {model_path}")
+            return None
+
+        if not os.path.exists(normalized_model_path):
+            logger.warning(f"Model file not found at {normalized_model_path}. Creating base model.")
             # Default architecture if not specified in path
-            arch = os.path.basename(model_path).replace('.h5', '') if '.h5' in model_path else 'enhanced_cnn_lstm'
+            arch = os.path.basename(normalized_model_path).replace('.h5', '') if '.h5' in normalized_model_path else 'enhanced_cnn_lstm'
             return build_model(arch)
-        model = tf.keras.models.load_model(model_path)
-        logger.info(f"Model loaded successfully from {model_path}")
+        model = tf.keras.models.load_model(normalized_model_path)
+        logger.info(f"Model loaded successfully from {normalized_model_path}")
         return model
     except Exception as e:
         logger.error(f"Error loading model from {model_path}: {str(e)}")
