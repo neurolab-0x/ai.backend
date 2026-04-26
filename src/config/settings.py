@@ -87,3 +87,14 @@ LLM_CONFIG = {
     'max_tokens': 1024,
     'timeout': 30
 }
+
+OPENROUTER_CONFIG = {
+    'base_url': os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+    'api_key': os.getenv('OPENROUTER_API_KEY'),
+    'model': os.getenv('OPENROUTER_MODEL', 'openai/gpt-4o-mini'),
+    'temperature': float(os.getenv('OPENROUTER_TEMPERATURE', '0.5')),
+    'max_tokens': int(os.getenv('OPENROUTER_MAX_TOKENS', '700')),
+    'timeout': float(os.getenv('OPENROUTER_TIMEOUT', '60')),
+    'app_name': os.getenv('OPENROUTER_APP_NAME', 'NeuroLab AI'),
+    'site_url': os.getenv('OPENROUTER_SITE_URL', ''),
+}

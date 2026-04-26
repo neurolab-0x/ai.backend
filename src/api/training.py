@@ -5,20 +5,41 @@ import os
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Query
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Query
 from pydantic import BaseModel, Field, validator
 import numpy as np
-from rq.job import Job
-from rq.exceptions import NoSuchJobError
+try:
+    from rq.job import Job
+    from rq.exceptions import NoSuchJobError
+    from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
+    RQ_AVAILABLE = True
+except ImportError:
+    Job = None
+
+    class NoSuchJobError(Exception):
+        pass
+
+    RQ_AVAILABLE = False
+    get_queue = None
+    track_job = None
+    list_tracked_jobs = None
+    untrack_job = None
 
 from src.utils.files import validate_file, save_uploaded_file
-from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
 from src.core.ml.model_types import sanitize_model_type
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def require_rq() -> None:
+    if not RQ_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Training queue is unavailable because RQ is not installed.",
+        )
 
 
 class TrainingConfig(BaseModel):
@@ -99,6 +120,7 @@ async def train_model(
     Use the job_id to check training status via /api/train/status/{job_id}
     """
     try:
+        require_rq()
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -169,6 +191,7 @@ async def train_model_from_file(
     Accepts CSV files with EEG data and labels.
     """
     try:
+        require_rq()
         # Validate file
         validate_file(file)
         
@@ -235,6 +258,7 @@ async def get_training_status(
     """
     Get the status of a training job.
     """
+    require_rq()
     try:
         job = Job.fetch(job_id, connection=get_queue("training").connection)
     except NoSuchJobError:
