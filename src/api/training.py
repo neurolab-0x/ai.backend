@@ -1,17 +1,21 @@
 """
 Training API endpoints for model training and retraining.
 """
+import asyncio
+import json
 import os
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, validator
 import numpy as np
 try:
     from rq.job import Job
     from rq.exceptions import NoSuchJobError
-    from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job
+    from src.queue import get_queue, track_job, list_tracked_jobs, untrack_job, publish_job_event, read_job_state, get_async_redis
     RQ_AVAILABLE = True
 except ImportError:
     Job = None
@@ -24,9 +28,18 @@ except ImportError:
     track_job = None
     list_tracked_jobs = None
     untrack_job = None
+    publish_job_event = None
+    read_job_state = None
+    get_async_redis = None
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
+from src.jobs.training_persistence import (
+    create_training_run,
+    delete_training_run as delete_training_run_record,
+    get_training_run as load_training_run,
+    list_training_runs as load_training_runs,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +75,13 @@ class TrainingConfig(BaseModel):
     @validator('model_type')
     def validate_model_type(cls, v):
         return sanitize_model_type(v)
+
+    @validator('validation_mode')
+    def validate_validation_mode(cls, v):
+        normalized = str(v).strip().lower()
+        if normalized != "split":
+            raise ValueError("Only validation_mode='split' is currently supported")
+        return normalized
 
 
 class TrainingData(BaseModel):
@@ -105,6 +125,67 @@ class TrainingStatus(BaseModel):
     completed_at: Optional[str]
     metrics: Optional[Dict[str, Any]]
     error: Optional[str]
+    artifacts: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class TrainingRunDetail(TrainingStatus):
+    subject_id: Optional[str] = None
+    session_id: Optional[str] = None
+    model_type: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+def _sanitize_model_type_or_400(model_type: str) -> str:
+    try:
+        return sanitize_model_type(model_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _serialize_dt(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _build_training_status(job: Optional[Job], persisted_run: Optional[Dict[str, Any]]) -> TrainingStatus:
+    state = persisted_run or {}
+    rq_status = job.get_status() if job is not None else None
+    status_str = state.get("status") or rq_status or "unknown"
+    progress = float(state.get("progress", job.meta.get("progress", 0.0) if job else 0.0))
+    message = str(state.get("message") or (job.meta.get("message") if job else None) or status_str)
+    metrics = state.get("metrics")
+    error = state.get("error") or (str(job.exc_info) if job is not None and job.is_failed else None)
+    artifacts = state.get("artifacts")
+    config = state.get("config")
+    return TrainingStatus(
+        job_id=(state.get("job_id") or (job.id if job else "")),
+        status=status_str,
+        progress=progress,
+        message=message,
+        started_at=_serialize_dt(state.get("started_at") or (job.enqueued_at if job else None) or datetime.now()),
+        completed_at=_serialize_dt(state.get("completed_at") or (job.ended_at if job else None)),
+        metrics=metrics if isinstance(metrics, dict) else None,
+        error=error,
+        artifacts=artifacts if isinstance(artifacts, dict) else None,
+        config=config if isinstance(config, dict) else None,
+    )
+
+
+def _build_training_run_detail(job: Optional[Job], persisted_run: Dict[str, Any]) -> TrainingRunDetail:
+    base = _build_training_status(job, persisted_run)
+    return TrainingRunDetail(
+        **base.model_dump(),
+        subject_id=persisted_run.get("subject_id"),
+        session_id=persisted_run.get("session_id"),
+        model_type=persisted_run.get("model_type"),
+        created_at=_serialize_dt(persisted_run.get("created_at")),
+        updated_at=_serialize_dt(persisted_run.get("updated_at")),
+    )
 
 
 @router.post("/train", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -121,6 +202,7 @@ async def train_model(
     """
     try:
         require_rq()
+        model_type = _sanitize_model_type_or_400(model_type)
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -131,16 +213,38 @@ async def train_model(
         if data.config is None:
             data.config = TrainingConfig(model_type=model_type)
         else:
-            # Sync model_type from query param to config
-            data.config.model_type = model_type
+            config_payload = data.config.dict()
+            config_payload["model_type"] = model_type
+            data.config = TrainingConfig(**config_payload)
 
+        job_id = f"train_{uuid4().hex}"
         # Persist arrays to disk to avoid pickling huge payloads into Redis.
         os.makedirs("temp", exist_ok=True)
-        temp_npz = os.path.join("temp", f"train_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.npz")
+        temp_npz = os.path.join("temp", f"{job_id}.npz")
         if X_test is None or y_test is None:
             np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train)
         else:
             np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+
+        run_record = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 0.0,
+            "message": "Training job queued",
+            "run_type": "train_from_data",
+            "model_type": model_type,
+            "subject_id": data.config.subject_id,
+            "session_id": data.config.session_id,
+            "config": data.config.dict(),
+            "artifacts": {
+                "training_bundle_local_path": temp_npz,
+            },
+            "metrics": None,
+            "error": None,
+            "started_at": datetime.now(),
+            "completed_at": None,
+        }
+        create_training_run(run_record)
 
         try:
             q = get_queue("training")
@@ -149,6 +253,7 @@ async def train_model(
                 temp_npz,
                 data.config.dict(),
                 model_type,
+                job_id=job_id,
                 job_timeout=60 * 60 * 6,  # 6h
                 result_ttl=60 * 60 * 24,
             )
@@ -157,8 +262,10 @@ async def train_model(
                 os.remove(temp_npz)
             except OSError:
                 pass
+            delete_training_run_record(job_id)
             raise
         track_job("training", job.id)
+        publish_job_event("training", job.id, "queued", {"run_type": "train_from_data", "model_type": model_type})
         logger.info(f"Training job {job.id} enqueued")
         
         return TrainingResponse(
@@ -192,6 +299,7 @@ async def train_model_from_file(
     """
     try:
         require_rq()
+        model_type = _sanitize_model_type_or_400(model_type)
         # Validate file
         validate_file(file)
         
@@ -202,8 +310,7 @@ async def train_model_from_file(
         if config:
             import json
             config_dict = json.loads(config)
-            if 'model_type' not in config_dict:
-                config_dict['model_type'] = model_type
+            config_dict['model_type'] = model_type
             if 'overlap' not in config_dict:
                 config_dict['overlap'] = overlap
             if 'simple_mode' not in config_dict:
@@ -216,6 +323,28 @@ async def train_model_from_file(
                 simple_mode=simple_mode
             )
 
+        job_id = f"train_file_{uuid4().hex}"
+        run_record = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 0.0,
+            "message": "Training-from-file job queued",
+            "run_type": "train_from_file",
+            "model_type": model_type,
+            "subject_id": training_config.subject_id,
+            "session_id": training_config.session_id,
+            "config": training_config.dict(),
+            "artifacts": {
+                "uploaded_file_local_path": file_location,
+                "uploaded_file_name": file.filename,
+            },
+            "metrics": None,
+            "error": None,
+            "started_at": datetime.now(),
+            "completed_at": None,
+        }
+        create_training_run(run_record)
+
         try:
             q = get_queue("training")
             job = q.enqueue(
@@ -223,6 +352,7 @@ async def train_model_from_file(
                 file_location,
                 training_config.dict(),
                 model_type,
+                job_id=job_id,
                 job_timeout=60 * 60 * 6,  # 6h
                 result_ttl=60 * 60 * 24,
             )
@@ -231,8 +361,10 @@ async def train_model_from_file(
                 os.remove(file_location)
             except OSError:
                 pass
+            delete_training_run_record(job_id)
             raise
         track_job("training", job.id)
+        publish_job_event("training", job.id, "queued", {"run_type": "train_from_file", "model_type": model_type})
         logger.info(f"Training-from-file job {job.id} enqueued for {file.filename}")
         
         return TrainingResponse(
@@ -258,29 +390,17 @@ async def get_training_status(
     """
     Get the status of a training job.
     """
-    require_rq()
-    try:
-        job = Job.fetch(job_id, connection=get_queue("training").connection)
-    except NoSuchJobError:
+    persisted_run = load_training_run(job_id)
+    job = None
+    if RQ_AVAILABLE:
+        try:
+            job = Job.fetch(job_id, connection=get_queue("training").connection)
+        except NoSuchJobError:
+            job = None
+
+    if persisted_run is None and job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Training job {job_id} not found")
-
-    status_str = job.get_status()
-    progress = float(job.meta.get("progress", 0.0))
-    message = job.meta.get("message", status_str)
-
-    result = job.result if job.is_finished else None
-    error = str(job.exc_info) if job.is_failed else None
-
-    return TrainingStatus(
-        job_id=job.id,
-        status=status_str,
-        progress=progress,
-        message=message,
-        started_at=job.enqueued_at.isoformat() if job.enqueued_at else datetime.now().isoformat(),
-        completed_at=job.ended_at.isoformat() if job.ended_at else None,
-        metrics=result if isinstance(result, dict) else None,
-        error=error,
-    )
+    return _build_training_status(job, persisted_run)
 
 
 @router.get("/jobs", response_model=List[TrainingStatus])
@@ -292,26 +412,22 @@ async def list_training_jobs(
     List training jobs.
     Returns all jobs (authentication disabled).
     """
-    job_ids = list_tracked_jobs("training")
+    persisted_runs = load_training_runs(limit=max(limit, 20))
     jobs: List[TrainingStatus] = []
-    for jid in job_ids:
-        try:
-            job = Job.fetch(jid, connection=get_queue("training").connection)
-        except Exception:
+    job_ids = list_tracked_jobs("training") if RQ_AVAILABLE else []
+    seen = {run.get("job_id") for run in persisted_runs if run.get("job_id")}
+    ordered_ids = [run["job_id"] for run in persisted_runs if run.get("job_id")] + [jid for jid in job_ids if jid not in seen]
+    for jid in ordered_ids:
+        persisted_run = next((run for run in persisted_runs if run.get("job_id") == jid), None)
+        job = None
+        if RQ_AVAILABLE:
+            try:
+                job = Job.fetch(jid, connection=get_queue("training").connection)
+            except Exception:
+                job = None
+        if job is None and persisted_run is None:
             continue
-        status_str = job.get_status()
-        jobs.append(
-            TrainingStatus(
-                job_id=job.id,
-                status=status_str,
-                progress=float(job.meta.get("progress", 0.0)),
-                message=str(job.meta.get("message", status_str)),
-                started_at=job.enqueued_at.isoformat() if job.enqueued_at else datetime.now().isoformat(),
-                completed_at=job.ended_at.isoformat() if job.ended_at else None,
-                metrics=job.result if job.is_finished and isinstance(job.result, dict) else None,
-                error=str(job.exc_info) if job.is_failed else None,
-            )
-        )
+        jobs.append(_build_training_status(job, persisted_run))
     jobs.sort(key=lambda j: j.started_at, reverse=True)
     return jobs[:limit]
 
@@ -324,12 +440,19 @@ async def delete_training_job(
     """
     Delete a training job record (Admin only).
     """
-    try:
-        job = Job.fetch(job_id, connection=get_queue("training").connection)
-    except NoSuchJobError:
+    job = None
+    if RQ_AVAILABLE:
+        try:
+            job = Job.fetch(job_id, connection=get_queue("training").connection)
+        except NoSuchJobError:
+            job = None
+    if job is None and load_training_run(job_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Training job {job_id} not found")
-    job.delete()
-    untrack_job("training", job_id)
+    if job is not None:
+        job.delete()
+    if RQ_AVAILABLE:
+        untrack_job("training", job_id)
+    delete_training_run_record(job_id)
     return {"status": "success", "message": f"Training job {job_id} deleted"}
 
 
@@ -345,6 +468,7 @@ async def compare_models(
     (Authentication disabled)
     """
     try:
+        require_rq()
         # Convert data to numpy arrays
         X_train = np.array(data.X_train)
         y_train = np.array(data.y_train)
@@ -358,8 +482,27 @@ async def compare_models(
             )
         
         os.makedirs("temp", exist_ok=True)
-        temp_npz = os.path.join("temp", f"compare_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.npz")
+        job_id = f"compare_{uuid4().hex}"
+        temp_npz = os.path.join("temp", f"{job_id}.npz")
         np.savez_compressed(temp_npz, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
+
+        run_record = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 0.0,
+            "message": "Model comparison queued",
+            "run_type": "compare_models",
+            "model_type": None,
+            "subject_id": data.config.subject_id if data.config else None,
+            "session_id": data.config.session_id if data.config else None,
+            "config": {"n_repeats": n_repeats, **(data.config.dict() if data.config else {})},
+            "artifacts": {"comparison_bundle_local_path": temp_npz},
+            "metrics": None,
+            "error": None,
+            "started_at": datetime.now(),
+            "completed_at": None,
+        }
+        create_training_run(run_record)
 
         try:
             q = get_queue("training")
@@ -367,6 +510,7 @@ async def compare_models(
                 "src.jobs.training.compare_models_from_npz",
                 temp_npz,
                 n_repeats=n_repeats,
+                job_id=job_id,
                 job_timeout=60 * 60 * 6,
                 result_ttl=60 * 60 * 24,
             )
@@ -375,8 +519,10 @@ async def compare_models(
                 os.remove(temp_npz)
             except OSError:
                 pass
+            delete_training_run_record(job_id)
             raise
         track_job("training", job.id)
+        publish_job_event("training", job.id, "queued", {"run_type": "compare_models"})
         
         return TrainingResponse(
             job_id=job.id,
@@ -393,3 +539,89 @@ async def compare_models(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start model comparison: {str(e)}"
         )
+
+
+@router.get("/runs/{job_id}", response_model=TrainingRunDetail)
+async def get_training_run_detail(job_id: str):
+    """Return the canonical persisted training run view by job id."""
+    persisted_run = load_training_run(job_id)
+    if persisted_run is None:
+        raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
+    job = None
+    if RQ_AVAILABLE:
+        try:
+            job = Job.fetch(job_id, connection=get_queue("training").connection)
+        except Exception:
+            job = None
+    return _build_training_run_detail(job, persisted_run)
+
+
+@router.get("/history", response_model=List[TrainingRunDetail])
+async def get_training_history(limit: int = 20):
+    """Return persisted training run history newest first."""
+    persisted_runs = load_training_runs(limit=limit)
+    details: List[TrainingRunDetail] = []
+    for run in persisted_runs:
+        job = None
+        if RQ_AVAILABLE:
+            try:
+                job = Job.fetch(run["job_id"], connection=get_queue("training").connection)
+            except Exception:
+                job = None
+        details.append(_build_training_run_detail(job, run))
+    return details
+
+
+@router.get("/runs/{job_id}/artifacts")
+async def get_training_run_artifacts(job_id: str):
+    """Return persisted artifact metadata for a training run."""
+    run = load_training_run(job_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
+    return {
+        "job_id": job_id,
+        "artifacts": run.get("artifacts") or {},
+    }
+
+
+@router.get("/sse")
+async def stream_training_events(job_id: str):
+    """Server-Sent Events stream for training job events."""
+    if get_async_redis is None:
+        raise HTTPException(status_code=503, detail="Training event stream is unavailable")
+
+    async def event_gen():
+        redis = get_async_redis()
+        pubsub = redis.pubsub()
+        channel = f"neurolab:job:events:training:{job_id}"
+        try:
+            await pubsub.subscribe(channel)
+            state = read_job_state("training", job_id) if read_job_state else None
+            yield f"event: ready\ndata: {json.dumps({'job_id': job_id, 'state': state}, default=str)}\n\n".encode("utf-8")
+            if state and state.get("event") in {"completed", "failed"}:
+                yield f"event: {state['event']}\ndata: {json.dumps(state, default=str)}\n\n".encode("utf-8")
+                return
+
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+                if message and message.get("data"):
+                    data = message["data"]
+                    if isinstance(data, (bytes, bytearray)):
+                        data = data.decode("utf-8")
+                    payload = json.loads(data)
+                    event_name = payload.get("event", "message")
+                    yield f"event: {event_name}\ndata: {json.dumps(payload, default=str)}\n\n".encode("utf-8")
+                    if event_name in {"completed", "failed"}:
+                        break
+                else:
+                    yield b"event: ping\ndata: {}\n\n"
+                await asyncio.sleep(0.05)
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+            except Exception:
+                logger.debug("Training SSE unsubscribe failed for job %s", job_id)
+            await pubsub.close()
+            await redis.close()
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
