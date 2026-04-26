@@ -207,13 +207,13 @@ async def voice_health_check():
             "sample_rate": processor.sample_rate,
             "timestamp": datetime.now().isoformat()
         }
-    except Exception as e:
-        logger.error(f"Voice health check failed: {str(e)}")
+    except Exception:
+        logger.exception("Voice health check failed")
         return JSONResponse(
             status_code=503,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Voice processor unavailable",
                 "timestamp": datetime.now().isoformat()
             }
         )
