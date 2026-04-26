@@ -59,13 +59,13 @@ class NLPRecommendationEngine:
         features: Dict[str, float] = None
     ) -> RecommendationContext:
         """Build a recommendation context object from raw metrics"""
-        # Map state indices: 0: relaxed, 1: focused, 2: stressed
+        # Map state indices to non-diagnostic labels for recommendation context.
         relaxation_ratio = state_durations.get(0, 0) / total_duration if total_duration > 0 else 0
         focus_ratio = state_durations.get(1, 0) / total_duration if total_duration > 0 else 0
         stress_ratio = state_durations.get(2, 0) / total_duration if total_duration > 0 else 0
         
         # Determine current state label based on dominant duration
-        states = {0: "relaxed", 1: "focused", 2: "stressed"}
+        states = {0: "calm", 1: "engaged", 2: "elevated_stress"}
         dominant_state_idx = max(state_durations, key=state_durations.get) if state_durations else 0
         state_label = states.get(dominant_state_idx, "unknown")
         

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import Counter
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -13,6 +14,7 @@ from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
 from src.services.chat import generate_conversation_title
 from src.queue import get_async_redis, publish_job_event, read_job_state
+from src.utils.validation import require_safe_id_or_400, validate_optional_safe_id, validate_safe_id
 
 try:
     from rq.job import Job
@@ -81,6 +83,18 @@ class ChatJobRequest(BaseModel):
                 )
         return value
 
+    @field_validator("subject_id", "conversation_id")
+    @classmethod
+    def validate_optional_ids(cls, value: Optional[str], info):
+        return validate_optional_safe_id(value, info.field_name)
+
+    @field_validator("current_title")
+    @classmethod
+    def validate_title(cls, value: Optional[str]):
+        if value is None:
+            return value
+        return value[:200]
+
 @router.post('/upload', summary="Advanced EEG analysis", response_description="Cognitive state report")
 async def process_uploaded_file(
     file: Optional[UploadFile] = File(None),
@@ -109,10 +123,12 @@ async def process_uploaded_file(
                 simple_mode=simple_mode
             )
         elif json_data:
+            subject_id = validate_safe_id(str(json_data.get('subject_id', 'anonymous')), "subject_id")
+            session_id = validate_safe_id(str(json_data.get('session_id', 'session_1')), "session_id")
             result = await ml_processor.process_eeg_data(
                 json_data, 
-                "anonymous", 
-                "session_1", 
+                subject_id,
+                session_id,
                 model_type=model_type,
                 overlap=overlap,
                 simple_mode=simple_mode
@@ -124,6 +140,8 @@ async def process_uploaded_file(
             result = base64.b64encode(str(result).encode()).decode()
             
         return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
@@ -146,13 +164,15 @@ async def analyze_eeg_data(
             raise HTTPException(status_code=400, detail=str(ve))
         result = await ml_processor.process_eeg_data(
             data,
-            subject_id=data.get('subject_id', 'anonymous'),
-            session_id=data.get('session_id', 'session_1'),
+            subject_id=validate_safe_id(str(data.get('subject_id', 'anonymous')), "subject_id"),
+            session_id=validate_safe_id(str(data.get('session_id', 'session_1')), "session_id"),
             model_type=model_type,
             overlap=overlap,
             simple_mode=simple_mode
         )
         return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
@@ -176,14 +196,16 @@ async def generate_detailed_report(
             raise HTTPException(status_code=400, detail=str(ve))
         report = await ml_processor.generate_detailed_report(
             data,
-            subject_id=data.get('subject_id', 'anonymous'),
-            session_id=data.get('session_id', 'session_1'),
+            subject_id=validate_safe_id(str(data.get('subject_id', 'anonymous')), "subject_id"),
+            session_id=validate_safe_id(str(data.get('session_id', 'session_1')), "session_id"),
             save_report=save_report,
             model_type=model_type,
             overlap=overlap,
             simple_mode=simple_mode
         )
         return report
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
@@ -227,35 +249,58 @@ async def get_recommendations(
 async def get_decision_support(
     history: List[Dict[str, Any]] = Body(..., description="User analysis history")
 ):
-    """Generate decision support insights from user history"""
+    """Generate non-diagnostic history summaries from prior sessions."""
     try:
-        # We can reuse the recommendation engine's ability to analyze history
-        # For a more specific "decision support", we might want to aggregate history
         if not history:
             return {
-                "summary": "No history available for decision support.",
-                "patterns": [],
-                "risks": []
+                "summary": {
+                    "sessions_analyzed": 0,
+                    "average_confidence": None,
+                    "dominant_state_counts": {},
+                },
+                "observed_patterns": [],
+                "supportive_recommendations": [],
+                "medical_disclaimer": (
+                    "This output is non-diagnostic and should not replace professional medical evaluation."
+                ),
             }
-            
-        # Extract recent metrics for the engine
-        # This is a simplified implementation that uses the engine's LLM capabilities
-        # if available, or fallback logic.
-        
-        # For now, let's use the NLP engine to generate a summary
-        # We'll need to mock a context if we want to use generate_detailed_report
-        # or just call a new method if we were to add it.
-        # Given the current AIService.js expectation, we'll return a structure it likes.
-        
-        # Mocking a simple response for now that matches the engine's capability
+
+        states = [str(item.get("dominant_state")) for item in history if item.get("dominant_state") is not None]
+        confidences = [
+            float(item.get("confidence"))
+            for item in history
+            if isinstance(item.get("confidence"), (int, float))
+        ]
+        state_counts = Counter(states)
+        observed_patterns: List[str] = []
+        recommendations: List[str] = []
+
+        if state_counts:
+            dominant_state, dominant_count = state_counts.most_common(1)[0]
+            observed_patterns.append(
+                f"Most recent sessions most often reported '{dominant_state}' ({dominant_count} of {len(history)} sessions)."
+            )
+        average_confidence = round(sum(confidences) / len(confidences), 2) if confidences else None
+        if average_confidence is not None:
+            observed_patterns.append(f"Average model confidence across sessions was {average_confidence}%.")
+            if average_confidence < 60:
+                recommendations.append("Collect additional sessions before treating this pattern as stable.")
+        if len(state_counts) > 1:
+            recommendations.append("Review session context alongside these shifts before drawing conclusions.")
+        if not recommendations:
+            recommendations.append("Use these summaries as supportive wellness context, not as a diagnosis.")
+
         return {
-            "summary": "Based on your recent sessions, you are showing consistent focus patterns.",
-            "patterns": ["High focus during morning sessions", "Increased stress in late afternoon"],
-            "risks": ["Potential burnout if rest periods are not maintained"],
-            "recommendations": [
-                "Schedule a 10-minute break after 90 minutes of focused work",
-                "Practice guided meditation during high-stress periods"
-            ]
+            "summary": {
+                "sessions_analyzed": len(history),
+                "average_confidence": average_confidence,
+                "dominant_state_counts": dict(state_counts),
+            },
+            "observed_patterns": observed_patterns,
+            "supportive_recommendations": recommendations,
+            "medical_disclaimer": (
+                "This output is non-diagnostic and should not replace professional medical evaluation."
+            ),
         }
     except HTTPException:
         raise
@@ -303,6 +348,7 @@ async def submit_chat_job(data: ChatJobRequest):
 @router.get('/chat/status/{job_id}', summary="Get background chat job status")
 async def get_chat_job_status(job_id: str):
     """Return the latest known state for a background chat job."""
+    job_id = require_safe_id_or_400(job_id, "job_id")
     state = read_job_state("chat", job_id)
     rq_status = None
     if RQ_AVAILABLE:
@@ -331,6 +377,7 @@ async def stream_chat_job_events(
     job_id: str,
 ) -> StarletteStreamingResponse:
     """Server-Sent Events stream for queued chat retrieval and LLM generation updates."""
+    job_id = require_safe_id_or_400(job_id, "job_id")
 
     async def event_gen():
         redis = get_async_redis()
@@ -377,6 +424,7 @@ async def generate_chat_name(
 ):
     """Generate a short title for a chat conversation."""
     try:
+        subject_id = validate_optional_safe_id(subject_id, "subject_id")
         title = await generate_conversation_title(history, subject_id=subject_id)
         return {"name": title}
     except HTTPException:

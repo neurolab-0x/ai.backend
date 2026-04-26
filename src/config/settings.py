@@ -4,6 +4,25 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+ENVIRONMENT = os.getenv("ENV", "development").strip().lower()
+
+
+def is_production_environment() -> bool:
+    return ENVIRONMENT == "production"
+
+
+def get_allowed_origins() -> list[str]:
+    origins = [
+        origin.strip()
+        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if origins:
+        return origins
+    if is_production_environment():
+        return []
+    return ["http://localhost:3000"]
+
 PROCESSING_CONFIG = {
     'sample_rate': 0.5,
     'smoothing_window': 5,
@@ -50,6 +69,7 @@ SECURITY_CONFIG = {
     
     # Authentication settings
     'require_authentication': os.getenv('REQUIRE_AUTH', 'false').lower() == 'true',  # Can be overridden with REQUIRE_AUTH env var
+    'bearer_token': os.getenv('API_BEARER_TOKEN') or os.getenv('AUTH_BEARER_TOKEN'),
     'token_expiry_hours': 24,               # JWT token expiry time in hours
     'refresh_token_expiry_days': 30,        # Refresh token expiry in days
     
@@ -98,3 +118,27 @@ OPENROUTER_CONFIG = {
     'app_name': os.getenv('OPENROUTER_APP_NAME', 'NeuroLab AI'),
     'site_url': os.getenv('OPENROUTER_SITE_URL', ''),
 }
+
+
+def validate_runtime_environment() -> None:
+    if not is_production_environment():
+        return
+
+    from src.config.database import INFLUXDB_CONFIG, MINIO_CONFIG, MONGODB_CONFIG
+
+    missing = []
+    if not get_allowed_origins():
+        missing.append("ALLOWED_ORIGINS")
+    if not MONGODB_CONFIG["uri"] or MONGODB_CONFIG["uri"] == "mongodb://localhost:27017":
+        missing.append("MONGODB_URI")
+    if not INFLUXDB_CONFIG["token"] or INFLUXDB_CONFIG["token"] == "test-token":
+        missing.append("INFLUXDB_TOKEN")
+    if not MINIO_CONFIG["secret_key"] or MINIO_CONFIG["secret_key"] == "minioadmin":
+        missing.append("MINIO_SECRET_KEY")
+    if SECURITY_CONFIG["require_authentication"] and not SECURITY_CONFIG.get("bearer_token"):
+        missing.append("API_BEARER_TOKEN")
+
+    if missing:
+        raise RuntimeError(
+            "Missing or unsafe production configuration: " + ", ".join(sorted(set(missing)))
+        )

@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
-import io
+
+from src.utils.files import read_validated_audio_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ async def analyze_audio(
     Returns:
     - emotion: Detected emotion (angry, calm, fear, happy, neutral, sad, surprise)
     - confidence: Prediction confidence (0-1)
-    - mental_state: Mapped mental state (0=relaxed, 1=focused, 2=stressed)
+    - mental_state: Mapped signal state (0=calm, 1=engaged, 2=elevated_stress)
     - emotion_probabilities: Probability distribution across all emotions
     - features: Extracted audio features
     """
@@ -50,10 +51,7 @@ async def analyze_audio(
         processor = get_voice_processor()
         
         # Read audio file
-        audio_data = await file.read()
-        
-        if len(audio_data) == 0:
-            raise HTTPException(status_code=400, detail="Empty audio file")
+        audio_data = await read_validated_audio_bytes(file)
         
         # Process audio
         result = processor.process_audio(audio_data, sample_rate)
@@ -62,7 +60,8 @@ async def analyze_audio(
             "status": "success",
             "data": result,
             "filename": file.filename,
-            "file_size": len(audio_data)
+            "file_size": len(audio_data),
+            "medical_disclaimer": "This output is non-diagnostic and should not replace professional medical evaluation.",
         }
         
     except HTTPException:
@@ -100,10 +99,10 @@ async def analyze_audio_batch(
         results = []
         
         for file in files:
-            audio_data = await file.read()
-            
-            if len(audio_data) == 0:
-                logger.warning(f"Skipping empty file: {file.filename}")
+            try:
+                audio_data = await read_validated_audio_bytes(file)
+            except HTTPException as exc:
+                logger.warning("Skipping invalid audio file %s: %s", file.filename, exc.detail)
                 continue
             
             result = processor.process_audio(audio_data, sample_rate)
@@ -142,7 +141,8 @@ async def analyze_audio_batch(
             "total_files": len(files),
             "processed_files": len(results),
             "results": results,
-            "pattern_analysis": pattern_analysis
+            "pattern_analysis": pattern_analysis,
+            "medical_disclaimer": "This output is non-diagnostic and should not replace professional medical evaluation.",
         }
         
     except HTTPException:
@@ -183,7 +183,8 @@ async def analyze_raw_audio(
         
         return {
             "status": "success",
-            "data": result
+            "data": result,
+            "medical_disclaimer": "This output is non-diagnostic and should not replace professional medical evaluation.",
         }
         
     except HTTPException:
@@ -228,8 +229,8 @@ async def get_supported_emotions():
         "emotions": list(processor.emotion_to_state.keys()),
         "emotion_to_state_mapping": processor.emotion_to_state,
         "mental_states": {
-            0: "relaxed",
-            1: "focused",
-            2: "stressed"
+            0: "calm",
+            1: "engaged",
+            2: "elevated_stress"
         }
     }

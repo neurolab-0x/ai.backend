@@ -7,6 +7,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from src.config.database import ENABLE_DATABASES, INFLUXDB_CONFIG, MONGODB_CONFIG
+from src.utils.validation import validate_safe_id
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,8 @@ class DatabaseService:
             return False
             
         try:
+            subject_id = validate_safe_id(subject_id, "subject_id")
+            session_id = validate_safe_id(session_id, "session_id")
             point = Point("eeg_metrics") \
                 .tag("subject_id", subject_id) \
                 .tag("session_id", session_id) \
@@ -101,6 +104,8 @@ class DatabaseService:
             return None
             
         try:
+            subject_id = validate_safe_id(subject_id, "subject_id")
+            session_id = validate_safe_id(session_id, "session_id")
             record = {
                 "subject_id": subject_id,
                 "session_id": session_id,
@@ -143,6 +148,7 @@ class DatabaseService:
         """Retrieve aggregated metrics for a specific session"""
         if not self.enabled:
             return None
+        session_id = validate_safe_id(session_id, "session_id")
             
         # First check MongoDB for summary
         summary = await self.db.sessions.find_one({"session_id": session_id})
@@ -169,6 +175,7 @@ class DatabaseService:
         """Retrieve historical session summaries for a user from both DBs"""
         if not self.enabled:
             return []
+        subject_id = validate_safe_id(subject_id, "subject_id")
             
         history = []
         
@@ -225,6 +232,7 @@ class DatabaseService:
             return []
             
         try:
+            session_id = validate_safe_id(session_id, "session_id")
             query = f'from(bucket: "{self.bucket}") \
                 |> range(start: {start_time.isoformat()}Z, stop: {end_time.isoformat()}Z) \
                 |> filter(fn: (r) => r["session_id"] == "{session_id}")'

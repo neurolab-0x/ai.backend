@@ -17,8 +17,13 @@ from src.config.settings import PROCESSING_CONFIG, THRESHOLDS
 from src.queue import safe_enqueue
 from src.core.ml.model_types import sanitize_model_type
 from src.services.model_manager import get_model_manager
+from src.utils.validation import validate_safe_id
 
 logger = logging.getLogger(__name__)
+NON_DIAGNOSTIC_DISCLAIMER = (
+    "This output reflects automated signal interpretation only and is not a diagnosis "
+    "or a substitute for professional medical evaluation."
+)
 
 class MLProcessor:
     """
@@ -80,6 +85,8 @@ class MLProcessor:
             model_type = sanitize_model_type(model_type or self.default_model)
             if not model_type:  # pragma: no cover (sanitize_model_type guards)
                 raise ValueError("model_type must be specified")
+            subject_id = validate_safe_id(subject_id, "subject_id")
+            session_id = validate_safe_id(session_id, "session_id")
             logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
             # Step 1: Load and preprocess data
@@ -140,12 +147,14 @@ class MLProcessor:
                     'state_transitions': state_transitions
                 },
                 'cognitive_metrics': cognitive_metrics,
-                'clinical_recommendations': recommendations,
+                'wellness_recommendations': recommendations,
+                'medical_disclaimer': NON_DIAGNOSTIC_DISCLAIMER,
                 'metadata': {
                     'subject_id': subject_id,
                     'session_id': session_id,
                     'timestamp': datetime.now().isoformat(),
-                    'model_type': model_type
+                    'model_type': model_type,
+                    'usage_notice': "For wellness tracking and research support only.",
                 }
             }
             
@@ -387,9 +396,9 @@ class MLProcessor:
             State label string
         """
         labels = {
-            0: "relaxed",
-            1: "focused",
-            2: "stressed"
+            0: "calm",
+            1: "engaged",
+            2: "elevated_stress"
         }
         return labels.get(state, "unknown")
     
