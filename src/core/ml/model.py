@@ -218,9 +218,15 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     _require_tensorflow()
     batch_size = kwargs.get('batch_size', 32)
     epochs = kwargs.get('epochs', 30)
+    validation_data = kwargs.get('validation_data')
     
     if len(X_train.shape) == 2:
         X_train = X_train.reshape(-1, X_train.shape[1], 1)
+    if validation_data is not None:
+        X_val, y_val = validation_data
+        if len(X_val.shape) == 2:
+            X_val = X_val.reshape(-1, X_val.shape[1], 1)
+        validation_data = (X_val, y_val)
     
     input_shape = (X_train.shape[1], 1)
     num_classes = len(np.unique(y_train))
@@ -255,7 +261,8 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         X_train, y_train,
         epochs=epochs,
         batch_size=batch_size,
-        validation_split=0.2,
+        validation_split=0.0 if validation_data is not None else 0.2,
+        validation_data=validation_data,
         class_weight=class_weight_dict,
         callbacks=callbacks,
         verbose=1
