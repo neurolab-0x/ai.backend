@@ -34,18 +34,15 @@ except ImportError:
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
-from src.jobs.training_persistence import (
-    create_training_run,
-    delete_training_run as delete_training_run_record,
-    get_training_run as load_training_run,
-    list_training_runs as load_training_runs,
-)
+from src.services.database import db_service
+from src.services.storage import MinioStorageService
 from src.utils.validation import require_safe_id_or_400, validate_optional_safe_id
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_storage_service: Optional[MinioStorageService] = None
 
 
 def require_rq() -> None:
@@ -162,6 +159,19 @@ def _sanitize_training_config_ids(config: Optional[TrainingConfig]) -> Optional[
     return TrainingConfig(**payload)
 
 
+def _get_storage_service() -> MinioStorageService:
+    global _storage_service
+    if _storage_service is None:
+        _storage_service = MinioStorageService()
+    return _storage_service
+
+
+def _hydrate_artifacts(artifacts: Any) -> Any:
+    if not isinstance(artifacts, (dict, list)):
+        return artifacts
+    return _get_storage_service().hydrate_artifact_urls(artifacts)
+
+
 def _build_training_status(job: Optional[Job], persisted_run: Optional[Dict[str, Any]]) -> TrainingStatus:
     state = persisted_run or {}
     rq_status = job.get_status() if job is not None else None
@@ -170,7 +180,7 @@ def _build_training_status(job: Optional[Job], persisted_run: Optional[Dict[str,
     message = str(state.get("message") or (job.meta.get("message") if job else None) or status_str)
     metrics = state.get("metrics")
     error = state.get("error") or (str(job.exc_info) if job is not None and job.is_failed else None)
-    artifacts = state.get("artifacts")
+    artifacts = _hydrate_artifacts(state.get("artifacts"))
     config = state.get("config")
     return TrainingStatus(
         job_id=(state.get("job_id") or (job.id if job else "")),
@@ -242,27 +252,28 @@ async def train_model(
             "status": "queued",
             "progress": 0.0,
             "message": "Training job queued",
-            "run_type": "train_from_data",
+            "run_type": "training_data",
+            "run_family": "training",
             "model_type": model_type,
             "subject_id": data.config.subject_id,
             "session_id": data.config.session_id,
-            "config": data.config.dict(),
+            "config": {**data.config.dict(), "run_type": "training_data"},
             "artifacts": {
-                "training_bundle_local_path": temp_npz,
+                "staging_bundle_name": os.path.basename(temp_npz),
             },
             "metrics": None,
             "error": None,
             "started_at": datetime.now(),
             "completed_at": None,
         }
-        create_training_run(run_record)
+        await db_service.create_training_run(run_record)
 
         try:
             q = get_queue("training")
             job = q.enqueue(
                 "src.jobs.training.train_from_npz",
                 temp_npz,
-                data.config.dict(),
+                {**data.config.dict(), "run_type": "training_data", "source": "api_train_payload"},
                 model_type,
                 job_id=job_id,
                 job_timeout=60 * 60 * 6,  # 6h
@@ -273,10 +284,10 @@ async def train_model(
                 os.remove(temp_npz)
             except OSError:
                 pass
-            delete_training_run_record(job_id)
+            await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)
-        publish_job_event("training", job.id, "queued", {"run_type": "train_from_data", "model_type": model_type})
+        publish_job_event("training", job.id, "queued", {"run_type": "training_data", "model_type": model_type})
         logger.info(f"Training job {job.id} enqueued")
         
         return TrainingResponse(
@@ -341,13 +352,13 @@ async def train_model_from_file(
             "status": "queued",
             "progress": 0.0,
             "message": "Training-from-file job queued",
-            "run_type": "train_from_file",
+            "run_type": "training_file",
+            "run_family": "training",
             "model_type": model_type,
             "subject_id": training_config.subject_id,
             "session_id": training_config.session_id,
-            "config": training_config.dict(),
+            "config": {**training_config.dict(), "run_type": "training_file"},
             "artifacts": {
-                "uploaded_file_local_path": file_location,
                 "uploaded_file_name": file.filename,
             },
             "metrics": None,
@@ -355,14 +366,14 @@ async def train_model_from_file(
             "started_at": datetime.now(),
             "completed_at": None,
         }
-        create_training_run(run_record)
+        await db_service.create_training_run(run_record)
 
         try:
             q = get_queue("training")
             job = q.enqueue(
                 "src.jobs.training.train_from_file",
                 file_location,
-                training_config.dict(),
+                {**training_config.dict(), "run_type": "training_file", "source": "uploaded_dataset_file"},
                 model_type,
                 job_id=job_id,
                 job_timeout=60 * 60 * 6,  # 6h
@@ -373,10 +384,10 @@ async def train_model_from_file(
                 os.remove(file_location)
             except OSError:
                 pass
-            delete_training_run_record(job_id)
+            await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)
-        publish_job_event("training", job.id, "queued", {"run_type": "train_from_file", "model_type": model_type})
+        publish_job_event("training", job.id, "queued", {"run_type": "training_file", "model_type": model_type})
         logger.info(f"Training-from-file job {job.id} enqueued for {file.filename}")
         
         return TrainingResponse(
@@ -403,7 +414,7 @@ async def get_training_status(
     Get the status of a training job.
     """
     job_id = require_safe_id_or_400(job_id, "job_id")
-    persisted_run = load_training_run(job_id)
+    persisted_run = await db_service.get_training_run(job_id)
     job = None
     if RQ_AVAILABLE:
         try:
@@ -425,7 +436,7 @@ async def list_training_jobs(
     List training jobs.
     Returns all jobs (authentication disabled).
     """
-    persisted_runs = load_training_runs(limit=max(limit, 20))
+    persisted_runs = await db_service.list_training_runs(limit=max(limit, 20))
     jobs: List[TrainingStatus] = []
     job_ids = list_tracked_jobs("training") if RQ_AVAILABLE else []
     seen = {run.get("job_id") for run in persisted_runs if run.get("job_id")}
@@ -460,14 +471,15 @@ async def delete_training_job(
             job = Job.fetch(job_id, connection=get_queue("training").connection)
         except NoSuchJobError:
             job = None
-    if job is None and load_training_run(job_id) is None:
+    persisted_run = await db_service.get_training_run(job_id)
+    if job is None and persisted_run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Training job {job_id} not found")
     if job is not None:
         job.delete()
     if RQ_AVAILABLE:
         untrack_job("training", job_id)
-    delete_training_run_record(job_id)
-    return {"status": "success", "message": f"Training job {job_id} deleted"}
+    await db_service.archive_training_run(job_id, reason="archived_by_user")
+    return {"status": "success", "message": f"Training job {job_id} archived"}
 
 
 @router.post("/compare", response_model=TrainingResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -506,18 +518,19 @@ async def compare_models(
             "status": "queued",
             "progress": 0.0,
             "message": "Model comparison queued",
-            "run_type": "compare_models",
+            "run_type": "comparison",
+            "run_family": "comparison",
             "model_type": None,
             "subject_id": data.config.subject_id if data.config else None,
             "session_id": data.config.session_id if data.config else None,
-            "config": {"n_repeats": n_repeats, **(data.config.dict() if data.config else {})},
-            "artifacts": {"comparison_bundle_local_path": temp_npz},
+            "config": {"n_repeats": n_repeats, "run_type": "comparison", **(data.config.dict() if data.config else {})},
+            "artifacts": {"staging_bundle_name": os.path.basename(temp_npz)},
             "metrics": None,
             "error": None,
             "started_at": datetime.now(),
             "completed_at": None,
         }
-        create_training_run(run_record)
+        await db_service.create_training_run(run_record)
 
         try:
             q = get_queue("training")
@@ -534,10 +547,10 @@ async def compare_models(
                 os.remove(temp_npz)
             except OSError:
                 pass
-            delete_training_run_record(job_id)
+            await db_service.archive_training_run(job_id, reason="enqueue_failed")
             raise
         track_job("training", job.id)
-        publish_job_event("training", job.id, "queued", {"run_type": "compare_models"})
+        publish_job_event("training", job.id, "queued", {"run_type": "comparison"})
         
         return TrainingResponse(
             job_id=job.id,
@@ -560,7 +573,7 @@ async def compare_models(
 async def get_training_run_detail(job_id: str):
     """Return the canonical persisted training run view by job id."""
     job_id = require_safe_id_or_400(job_id, "job_id")
-    persisted_run = load_training_run(job_id)
+    persisted_run = await db_service.get_training_run(job_id)
     if persisted_run is None:
         raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
     job = None
@@ -573,9 +586,9 @@ async def get_training_run_detail(job_id: str):
 
 
 @router.get("/history", response_model=List[TrainingRunDetail])
-async def get_training_history(limit: int = 20):
+async def get_training_history(limit: int = 20, include_archived: bool = False):
     """Return persisted training run history newest first."""
-    persisted_runs = load_training_runs(limit=limit)
+    persisted_runs = await db_service.list_training_runs(limit=limit, include_archived=include_archived)
     details: List[TrainingRunDetail] = []
     for run in persisted_runs:
         job = None
@@ -592,12 +605,12 @@ async def get_training_history(limit: int = 20):
 async def get_training_run_artifacts(job_id: str):
     """Return persisted artifact metadata for a training run."""
     job_id = require_safe_id_or_400(job_id, "job_id")
-    run = load_training_run(job_id)
+    run = await db_service.get_training_run(job_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
     return {
         "job_id": job_id,
-        "artifacts": run.get("artifacts") or {},
+        "artifacts": _hydrate_artifacts(run.get("artifacts") or {}),
     }
 
 
