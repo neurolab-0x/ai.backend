@@ -1,7 +1,10 @@
 import logging
 import os
+import json
+import shutil
 from datetime import datetime
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, List
 
 import numpy as np
 from rq import get_current_job
@@ -12,9 +15,11 @@ from src.core.ml.model import (
     evaluate_model,
     get_model_artifact_paths,
     model_comparison,
+    promote_model_artifacts,
     save_model_metadata,
     save_scaler_artifact,
     train_hybrid_model,
+    tf,
 )
 from src.jobs.training_persistence import update_training_run
 from src.preprocessing.labeling import label_eeg_states
@@ -50,6 +55,8 @@ def _update_run(job_id: str, status: str, progress: float, message: str, **extra
         "message": message,
     }
     payload.update(extra)
+    if isinstance(payload.get("artifacts"), dict):
+        payload["artifacts"] = _public_artifacts(payload["artifacts"])
     update_training_run(job_id, payload)
 
 
@@ -76,6 +83,185 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return str(value)
+
+
+def _write_json(path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(_json_safe(payload), handle, indent=2, sort_keys=True)
+
+
+def _job_run_paths(job_id: str) -> Dict[str, str]:
+    run_root = os.path.join("temp", "training_runs", job_id)
+    return {
+        "run_root": run_root,
+        "artifact_base_dir": os.path.join(run_root, "model_bundle"),
+        "metrics_dir": os.path.join(run_root, "metrics"),
+        "logs_dir": os.path.join(run_root, "logs"),
+    }
+
+
+def _artifact_descriptor(label: str, kind: str, **extra) -> Dict[str, Any]:
+    descriptor = {
+        "label": label,
+        "kind": kind,
+    }
+    descriptor.update(extra)
+    return descriptor
+
+
+def _register_object_artifact(
+    storage_service: MinioStorageService,
+    artifacts: Dict[str, Any],
+    *,
+    key: str,
+    local_path: str,
+    bucket_key: str,
+    object_name: str,
+    label: str,
+    kind: str,
+    content_type: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    artifacts.setdefault("objects", {})
+    if storage_service.enabled:
+        uploaded_name = storage_service.upload_file(local_path, bucket_key, object_name)
+        if uploaded_name:
+            artifacts["objects"][key] = storage_service.build_artifact_descriptor(
+                bucket_key,
+                uploaded_name,
+                label=label,
+                kind=kind,
+                content_type=content_type,
+                metadata=metadata,
+            )
+            return
+    artifacts["objects"][key] = _artifact_descriptor(
+        label,
+        kind,
+        local_reference=os.path.basename(local_path),
+        content_type=content_type,
+        metadata=metadata,
+    )
+
+
+def _public_artifacts(artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for key, value in artifacts.items():
+        if key.endswith("_local_path") or key.endswith("_local_dir") or key == "model_upload_temp_path":
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _public_artifacts(value)
+        elif isinstance(value, list):
+            cleaned[key] = [_public_artifacts(item) if isinstance(item, dict) else item for item in value]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+def _build_training_history_payload(history) -> Dict[str, Any]:
+    return {
+        "epochs": len(history.history.get("loss", [])),
+        "history": {key: [float(v) for v in values] for key, values in history.history.items()},
+    }
+
+
+def _save_training_visualizations(run_paths: Dict[str, str], history, test_metrics: Optional[Dict[str, Any]]) -> List[str]:
+    created_paths: List[str] = []
+    metrics_dir = run_paths["metrics_dir"]
+    os.makedirs(metrics_dir, exist_ok=True)
+
+    history_json_path = os.path.join(metrics_dir, "history.json")
+    _write_json(history_json_path, _build_training_history_payload(history))
+    created_paths.append(history_json_path)
+
+    if test_metrics:
+        metrics_json_path = os.path.join(metrics_dir, "evaluation.json")
+        _write_json(metrics_json_path, test_metrics)
+        created_paths.append(metrics_json_path)
+
+    try:
+        import matplotlib.pyplot as plt
+
+        accuracy_values = history.history.get("accuracy", [])
+        val_accuracy_values = history.history.get("val_accuracy", [])
+        loss_values = history.history.get("loss", [])
+        val_loss_values = history.history.get("val_loss", [])
+        if accuracy_values or loss_values:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+            if accuracy_values:
+                axes[0].plot(accuracy_values, label="train_accuracy")
+            if val_accuracy_values:
+                axes[0].plot(val_accuracy_values, label="val_accuracy")
+            axes[0].set_title("Accuracy")
+            axes[0].legend()
+            if loss_values:
+                axes[1].plot(loss_values, label="train_loss")
+            if val_loss_values:
+                axes[1].plot(val_loss_values, label="val_loss")
+            axes[1].set_title("Loss")
+            axes[1].legend()
+            fig.tight_layout()
+            curves_path = os.path.join(metrics_dir, "training_curves.png")
+            fig.savefig(curves_path)
+            plt.close(fig)
+            created_paths.append(curves_path)
+
+        confusion_matrix = (test_metrics or {}).get("confusion_matrix")
+        if confusion_matrix:
+            fig, ax = plt.subplots(figsize=(6, 5))
+            matrix = np.array(confusion_matrix)
+            heatmap = ax.imshow(matrix, cmap="Blues")
+            fig.colorbar(heatmap)
+            ax.set_title("Confusion Matrix")
+            matrix_path = os.path.join(metrics_dir, "confusion_matrix.png")
+            fig.savefig(matrix_path)
+            plt.close(fig)
+            created_paths.append(matrix_path)
+    except Exception as exc:
+        logger.warning(f"Failed to create training visualizations for {run_paths['run_root']}: {exc}")
+
+    return created_paths
+
+
+def _epoch_progress_callback(
+    *,
+    job_id: str,
+    total_epochs: int,
+    monitor: TrainingMonitor,
+    artifacts: Dict[str, Any],
+):
+    if tf is None:
+        return None
+
+    def _on_epoch_end(epoch: int, logs: Optional[Dict[str, Any]] = None):
+        metrics = {key: float(val) for key, val in (logs or {}).items() if isinstance(val, (int, float))}
+        progress = 0.1 + (((epoch + 1) / max(total_epochs, 1)) * 0.65)
+        message = f"Training epoch {epoch + 1}/{total_epochs}"
+        _set_meta(progress, message, epoch=epoch + 1, epoch_metrics=metrics)
+        _update_run(
+            job_id,
+            "training",
+            progress,
+            message,
+            artifacts=artifacts,
+            latest_epoch=epoch + 1,
+            latest_epoch_metrics=metrics,
+        )
+        _publish(
+            job_id,
+            "epoch_completed",
+            {
+                "progress": progress,
+                "epoch": epoch + 1,
+                "total_epochs": total_epochs,
+                "metrics": metrics,
+            },
+            persist_state=False,
+        )
+        monitor.log_metrics(job_id, epoch + 1, metrics)
+
+    return tf.keras.callbacks.LambdaCallback(on_epoch_end=_on_epoch_end)
 
 
 def _build_completed_event(
@@ -114,9 +300,15 @@ def train_from_npz(
     job_id = _current_job_id()
     monitor = TrainingMonitor()
     storage_service = MinioStorageService()
-    temp_model_path = f"processed/model_{job_id}.h5"
+    run_paths = _job_run_paths(job_id)
+    os.makedirs(run_paths["artifact_base_dir"], exist_ok=True)
+    os.makedirs(run_paths["metrics_dir"], exist_ok=True)
+    os.makedirs(run_paths["logs_dir"], exist_ok=True)
+    temp_model_path = os.path.join(run_paths["run_root"], "model_export.keras")
     artifacts: Dict[str, Any] = dict(existing_artifacts or {})
     artifacts["training_bundle_local_path"] = npz_path
+    artifacts["run_root_local_dir"] = run_paths["run_root"]
+    artifacts["storage_backend"] = "minio" if storage_service.enabled else "local"
 
     try:
         _set_meta(0.05, "Loading training data...")
@@ -127,6 +319,18 @@ def train_from_npz(
         y_train = data["y_train"]
         X_test = data["X_test"] if "X_test" in data else None
         y_test = data["y_test"] if "y_test" in data else None
+        if os.path.exists(npz_path):
+            _register_object_artifact(
+                storage_service,
+                artifacts,
+                key="training_bundle",
+                local_path=npz_path,
+                bucket_key="training",
+                object_name=f"runs/{job_id}/input/training_bundle.npz",
+                label="Training bundle",
+                kind="dataset_bundle",
+                content_type="application/octet-stream",
+            )
         input_feature_names = feature_names or (
             DEFAULT_FEATURE_NAMES if X_train.shape[1] == len(DEFAULT_FEATURE_NAMES) else [f"feature_{i}" for i in range(X_train.shape[1])]
         )
@@ -135,7 +339,7 @@ def train_from_npz(
             X_train = scaler.fit_transform(X_train)
             if X_test is not None and y_test is not None and len(X_test) and len(y_test):
                 X_test = scaler.transform(X_test)
-        save_scaler_artifact(model_type, scaler)
+        save_scaler_artifact(model_type, scaler, base_dir=run_paths["artifact_base_dir"])
         metadata_payload = {
             "input_features": input_feature_names,
             "scaler": scaler.__class__.__name__,
@@ -147,16 +351,18 @@ def train_from_npz(
         }
         if dataset_metadata:
             metadata_payload["dataset_metadata"] = _json_safe(dataset_metadata)
-        metadata_path = save_model_metadata(model_type, metadata_payload)
-        artifacts["scaler_local_path"] = get_model_artifact_paths(model_type)["scaler_path"]
+        metadata_path = save_model_metadata(model_type, metadata_payload, base_dir=run_paths["artifact_base_dir"])
+        run_model_paths = get_model_artifact_paths(model_type, base_dir=run_paths["artifact_base_dir"])
+        artifacts["scaler_local_path"] = run_model_paths["scaler_path"]
         artifacts["metadata_local_path"] = metadata_path
-        artifacts["model_local_path"] = get_model_artifact_paths(model_type)["model_path"]
+        artifacts["model_local_path"] = run_model_paths["model_path"]
 
         monitor.log_training_event(
             job_id,
             "STARTED",
             {
                 "job_id": job_id,
+                "run_type": config.get("run_type", "training"),
                 "subject_id": config.get("subject_id"),
                 "session_id": config.get("session_id"),
                 "model_type": model_type,
@@ -170,6 +376,12 @@ def train_from_npz(
         validation_data = None
         if X_test is not None and y_test is not None and len(X_test) and len(y_test):
             validation_data = (X_test, y_test)
+        epoch_callback = _epoch_progress_callback(
+            job_id=job_id,
+            total_epochs=int(config.get("epochs", 30)),
+            monitor=monitor,
+            artifacts=artifacts,
+        )
         model, history = train_hybrid_model(
             X_train,
             y_train,
@@ -187,6 +399,10 @@ def train_from_npz(
             overlap=config.get("overlap", 0.5),
             simple_mode=config.get("simple_mode", True),
             validation_data=validation_data,
+            artifact_base_dir=run_paths["artifact_base_dir"],
+            initial_model_base_dir="model",
+            tensorboard_log_dir=run_paths["logs_dir"],
+            extra_callbacks=[epoch_callback],
         )
 
         _set_meta(0.8, "Evaluating model...")
@@ -203,27 +419,6 @@ def train_from_npz(
         model.save(temp_model_path)
         artifacts["model_upload_temp_path"] = temp_model_path
 
-        if storage_service.enabled:
-            try:
-                _set_meta(0.95, "Uploading model to object storage...")
-                _update_run(job_id, "uploading_artifacts", 0.95, "Uploading model artifact...", artifacts=artifacts)
-                _publish(job_id, "uploading_artifacts", {"progress": 0.95})
-                model_paths = get_model_artifact_paths(model_type)
-                model_object_name = storage_service.upload_file(model_paths["model_path"], "models", f"{job_id}/model.keras")
-                scaler_object_name = storage_service.upload_file(model_paths["scaler_path"], "models", f"{job_id}/scaler.joblib")
-                metadata_object_name = storage_service.upload_file(model_paths["metadata_path"], "models", f"{job_id}/metadata.json")
-                if model_object_name:
-                    artifacts["model_object_name"] = model_object_name
-                    artifacts["model_url"] = storage_service.get_file_url("models", f"{job_id}/model.keras")
-                if scaler_object_name:
-                    artifacts["scaler_object_name"] = scaler_object_name
-                    artifacts["scaler_url"] = storage_service.get_file_url("models", f"{job_id}/scaler.joblib")
-                if metadata_object_name:
-                    artifacts["metadata_object_name"] = metadata_object_name
-                    artifacts["metadata_url"] = storage_service.get_file_url("models", f"{job_id}/metadata.json")
-            except Exception as exc:
-                logger.warning(f"MinIO upload failed: {exc}")
-
         result = {
             "final_train_accuracy": float(history.history["accuracy"][-1]),
             "final_val_accuracy": float(history.history.get("val_accuracy", [None])[-1]) if history.history.get("val_accuracy") else None,
@@ -231,6 +426,109 @@ def train_from_npz(
             "final_val_loss": float(history.history.get("val_loss", [None])[-1]) if history.history.get("val_loss") else None,
             "test_metrics": metrics or None,
         }
+        visualization_paths = _save_training_visualizations(run_paths, history, metrics or None)
+
+        _set_meta(0.92, "Uploading run artifacts...")
+        _update_run(job_id, "uploading_artifacts", 0.92, "Uploading run artifacts...", artifacts=artifacts)
+        _publish(job_id, "uploading_artifacts", {"progress": 0.92})
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="run_model",
+            local_path=run_model_paths["model_path"],
+            bucket_key="training",
+            object_name=f"runs/{job_id}/artifacts/model.keras",
+            label="Run model artifact",
+            kind="model",
+            content_type="application/octet-stream",
+            metadata={"model_type": model_type},
+        )
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="run_scaler",
+            local_path=run_model_paths["scaler_path"],
+            bucket_key="training",
+            object_name=f"runs/{job_id}/artifacts/scaler.joblib",
+            label="Run scaler artifact",
+            kind="scaler",
+            content_type="application/octet-stream",
+            metadata={"model_type": model_type},
+        )
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="run_metadata",
+            local_path=run_model_paths["metadata_path"],
+            bucket_key="training",
+            object_name=f"runs/{job_id}/artifacts/metadata.json",
+            label="Run metadata artifact",
+            kind="metadata",
+            content_type="application/json",
+            metadata={"model_type": model_type},
+        )
+        for path in visualization_paths:
+            filename = os.path.basename(path)
+            content_type = "application/json" if filename.endswith(".json") else "image/png"
+            _register_object_artifact(
+                storage_service,
+                artifacts,
+                key=filename.replace(".", "_"),
+                local_path=path,
+                bucket_key="training",
+                object_name=f"runs/{job_id}/metrics/{filename}",
+                label=filename,
+                kind="training_metric_artifact",
+                content_type=content_type,
+                metadata={"model_type": model_type},
+            )
+
+        _set_meta(0.97, "Promoting active model artifacts...")
+        _update_run(job_id, "promoting_model", 0.97, "Promoting active model artifacts...", artifacts=artifacts)
+        _publish(job_id, "promoting_model", {"progress": 0.97, "model_type": model_type})
+        promoted_paths = promote_model_artifacts(model_type, run_paths["artifact_base_dir"], target_base_dir="model")
+        artifacts["promotion"] = {
+            "promoted_at": datetime.now().isoformat(),
+            "model_type": model_type,
+            "active_artifact_dir": promoted_paths["artifact_dir"],
+        }
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="active_model",
+            local_path=promoted_paths["model_path"],
+            bucket_key="models",
+            object_name=f"active/{model_type}/model.keras",
+            label="Active model artifact",
+            kind="active_model",
+            content_type="application/octet-stream",
+            metadata={"model_type": model_type},
+        )
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="active_scaler",
+            local_path=promoted_paths["scaler_path"],
+            bucket_key="models",
+            object_name=f"active/{model_type}/scaler.joblib",
+            label="Active scaler artifact",
+            kind="active_scaler",
+            content_type="application/octet-stream",
+            metadata={"model_type": model_type},
+        )
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="active_metadata",
+            local_path=promoted_paths["metadata_path"],
+            bucket_key="models",
+            object_name=f"active/{model_type}/metadata.json",
+            label="Active metadata artifact",
+            kind="active_metadata",
+            content_type="application/json",
+            metadata={"model_type": model_type},
+        )
+        public_artifacts = _public_artifacts(artifacts)
 
         _set_meta(1.0, "Training completed.", artifacts=artifacts)
         _update_run(
@@ -239,7 +537,7 @@ def train_from_npz(
             1.0,
             "Training completed.",
             metrics=result,
-            artifacts=artifacts,
+            artifacts=public_artifacts,
             error=None,
             completed_at=datetime.now(),
         )
@@ -248,7 +546,7 @@ def train_from_npz(
             model_type=model_type,
             config=config,
             result=result,
-            artifacts=artifacts,
+            artifacts=public_artifacts,
         )
         _publish(job_id, "completed", completed_payload)
         monitor.log_training_event(
@@ -256,6 +554,7 @@ def train_from_npz(
             "COMPLETED",
             {
                 "job_id": job_id,
+                "run_type": config.get("run_type", "training"),
                 "subject_id": config.get("subject_id"),
                 "session_id": config.get("session_id"),
                 "model_type": model_type,
@@ -265,25 +564,27 @@ def train_from_npz(
         )
         return {
             **result,
-            "artifacts": artifacts,
+            "artifacts": public_artifacts,
         }
     except Exception as exc:
         _set_meta(1.0, f"Training failed: {exc}")
+        public_artifacts = _public_artifacts(artifacts)
         _update_run(
             job_id,
             "failed",
             1.0,
             f"Training failed: {exc}",
             error=str(exc),
-            artifacts=artifacts,
+            artifacts=public_artifacts,
             completed_at=datetime.now(),
         )
-        _publish(job_id, "failed", {"job_id": job_id, "error": str(exc), "artifacts": artifacts})
+        _publish(job_id, "failed", {"job_id": job_id, "error": str(exc), "artifacts": public_artifacts})
         monitor.log_training_event(
             job_id,
             "FAILED",
             {
                 "job_id": job_id,
+                "run_type": config.get("run_type", "training"),
                 "subject_id": config.get("subject_id"),
                 "session_id": config.get("session_id"),
                 "model_type": model_type,
@@ -294,6 +595,10 @@ def train_from_npz(
     finally:
         _cleanup_file(npz_path)
         _cleanup_file(temp_model_path)
+        try:
+            shutil.rmtree(run_paths["run_root"], ignore_errors=True)
+        except Exception:
+            logger.debug("Failed to remove run directory %s", run_paths["run_root"])
         monitor.close()
 
 
@@ -311,10 +616,24 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
             try:
                 object_name = storage_service.upload_file(file_path, "training", f"{job_id}/input/{os.path.basename(file_path)}")
                 if object_name:
-                    artifacts["uploaded_file_object_name"] = object_name
-                    artifacts["uploaded_file_url"] = storage_service.get_file_url("training", f"{job_id}/input/{os.path.basename(file_path)}")
+                    artifacts.setdefault("objects", {})
+                    artifacts["objects"]["uploaded_dataset"] = storage_service.build_artifact_descriptor(
+                        "training",
+                        object_name,
+                        label="Uploaded training dataset",
+                        kind="uploaded_dataset",
+                        content_type="application/octet-stream",
+                    )
             except Exception as exc:
                 logger.warning(f"Training input upload failed: {exc}")
+        else:
+            artifacts.setdefault("objects", {})
+            artifacts["objects"]["uploaded_dataset"] = _artifact_descriptor(
+                "Uploaded training dataset",
+                "uploaded_dataset",
+                local_reference=os.path.basename(file_path),
+                content_type="application/octet-stream",
+            )
 
         _set_meta(0.05, "Loading and preprocessing file...")
         _update_run(job_id, "preprocessing", 0.05, "Loading and preprocessing file...", artifacts=artifacts)
@@ -332,7 +651,7 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
         update_training_run(job_id, {"artifacts": artifacts})
         return train_from_npz(
             npz_path,
-            config,
+            {**config, "run_type": config.get("run_type", "training_file"), "source": "dataset_file"},
             model_type,
             existing_artifacts=artifacts,
             existing_scaler=preprocessing_metadata.get("scaler"),
@@ -346,7 +665,15 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
 
 def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]:
     job_id = _current_job_id()
-    artifacts: Dict[str, Any] = {"comparison_bundle_local_path": npz_path}
+    storage_service = MinioStorageService()
+    run_paths = _job_run_paths(job_id)
+    os.makedirs(run_paths["metrics_dir"], exist_ok=True)
+    artifacts: Dict[str, Any] = {
+        "comparison_bundle_local_path": npz_path,
+        "storage_backend": "minio" if storage_service.enabled else "local",
+        "run_root_local_dir": run_paths["run_root"],
+    }
+    monitor = TrainingMonitor()
     try:
         _set_meta(0.05, "Loading data for comparison...")
         _update_run(job_id, "loading_data", 0.05, "Loading data for comparison...", artifacts=artifacts)
@@ -356,11 +683,38 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
         y_train = data["y_train"]
         X_test = data["X_test"]
         y_test = data["y_test"]
+        if os.path.exists(npz_path):
+            _register_object_artifact(
+                storage_service,
+                artifacts,
+                key="comparison_bundle",
+                local_path=npz_path,
+                bucket_key="training",
+                object_name=f"runs/{job_id}/input/comparison_bundle.npz",
+                label="Comparison bundle",
+                kind="dataset_bundle",
+                content_type="application/octet-stream",
+            )
+        monitor.log_training_event(job_id, "STARTED", {"job_id": job_id, "run_type": "comparison", "n_repeats": n_repeats})
 
         _set_meta(0.1, "Comparing model architectures...")
         _update_run(job_id, "comparing", 0.1, "Comparing model architectures...", artifacts=artifacts)
         _publish(job_id, "comparing", {"progress": 0.1, "n_repeats": n_repeats})
         results = model_comparison(X_train, y_train, X_test, y_test, n_repeats=n_repeats)
+        results_path = os.path.join(run_paths["metrics_dir"], "comparison_results.json")
+        _write_json(results_path, results)
+        _register_object_artifact(
+            storage_service,
+            artifacts,
+            key="comparison_results",
+            local_path=results_path,
+            bucket_key="training",
+            object_name=f"runs/{job_id}/metrics/comparison_results.json",
+            label="Comparison results",
+            kind="comparison_metrics",
+            content_type="application/json",
+        )
+        public_artifacts = _public_artifacts(artifacts)
         _set_meta(1.0, "Model comparison completed.")
         _update_run(
             job_id,
@@ -368,23 +722,31 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
             1.0,
             "Model comparison completed.",
             metrics=results,
-            artifacts=artifacts,
+            artifacts=public_artifacts,
             completed_at=datetime.now(),
         )
-        _publish(job_id, "completed", {"job_id": job_id, "metrics": results, "artifacts": artifacts})
+        _publish(job_id, "completed", {"job_id": job_id, "run_type": "comparison", "metrics": results, "artifacts": public_artifacts})
+        monitor.log_training_event(job_id, "COMPLETED", {"job_id": job_id, "run_type": "comparison"})
         return results
     except Exception as exc:
         _set_meta(1.0, f"Model comparison failed: {exc}")
+        public_artifacts = _public_artifacts(artifacts)
         _update_run(
             job_id,
             "failed",
             1.0,
             f"Model comparison failed: {exc}",
             error=str(exc),
-            artifacts=artifacts,
+            artifacts=public_artifacts,
             completed_at=datetime.now(),
         )
-        _publish(job_id, "failed", {"job_id": job_id, "error": str(exc), "artifacts": artifacts})
+        _publish(job_id, "failed", {"job_id": job_id, "run_type": "comparison", "error": str(exc), "artifacts": public_artifacts})
+        monitor.log_training_event(job_id, "FAILED", {"job_id": job_id, "run_type": "comparison", "error": str(exc)})
         raise
     finally:
         _cleanup_file(npz_path)
+        try:
+            shutil.rmtree(run_paths["run_root"], ignore_errors=True)
+        except Exception:
+            logger.debug("Failed to remove comparison run directory %s", run_paths["run_root"])
+        monitor.close()

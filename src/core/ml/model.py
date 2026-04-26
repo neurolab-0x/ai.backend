@@ -8,6 +8,7 @@ import time
 import os
 import json
 import logging
+import shutil
 from datetime import datetime
 from typing import Tuple, Optional, Dict, List, Any
 from pathlib import Path
@@ -79,6 +80,26 @@ def save_scaler_artifact(model_type: str, scaler: Any, base_dir: str = "model") 
     os.makedirs(paths["artifact_dir"], exist_ok=True)
     joblib.dump(scaler, paths["scaler_path"])
     return paths["scaler_path"]
+
+
+def promote_model_artifacts(model_type: str, source_base_dir: str, target_base_dir: str = "model") -> Dict[str, str]:
+    """Promote a run-scoped artifact bundle into the active model directory."""
+    source_paths = get_model_artifact_paths(model_type, base_dir=source_base_dir)
+    target_paths = get_model_artifact_paths(model_type, base_dir=target_base_dir)
+    os.makedirs(target_paths["artifact_dir"], exist_ok=True)
+
+    required = {
+        "model_path": source_paths["model_path"],
+        "scaler_path": source_paths["scaler_path"],
+        "metadata_path": source_paths["metadata_path"],
+    }
+    missing = [name for name, path in required.items() if not os.path.exists(path)]
+    if missing:
+        raise FileNotFoundError(f"Missing run artifacts for promotion: {', '.join(missing)}")
+
+    for key in ("model_path", "scaler_path", "metadata_path"):
+        shutil.copy2(source_paths[key], target_paths[key])
+    return target_paths
 
 
 def load_model_metadata(model_type: str, base_dir: str = "model") -> Optional[Dict[str, Any]]:
@@ -281,6 +302,10 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     batch_size = kwargs.get('batch_size', 32)
     epochs = kwargs.get('epochs', 30)
     validation_data = kwargs.get('validation_data')
+    artifact_base_dir = kwargs.get('artifact_base_dir', 'model')
+    initial_model_base_dir = kwargs.get('initial_model_base_dir', 'model')
+    tensorboard_log_dir = kwargs.get('tensorboard_log_dir', f'./logs/{model_type}')
+    extra_callbacks = [cb for cb in kwargs.get('extra_callbacks', []) if cb is not None]
     
     if len(X_train.shape) == 2:
         X_train = X_train.reshape(-1, X_train.shape[1], 1)
@@ -293,13 +318,17 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     input_shape = (X_train.shape[1], 1)
     num_classes = len(np.unique(y_train))
     
-    artifact_paths = get_model_artifact_paths(model_type)
+    artifact_paths = get_model_artifact_paths(model_type, base_dir=artifact_base_dir)
     model_path = artifact_paths["model_path"]
-    legacy_model_path = artifact_paths["legacy_model_path"]
     os.makedirs(artifact_paths["artifact_dir"], exist_ok=True)
     
     # Try to load existing model for continuous training
-    existing_model_path = model_path if os.path.exists(model_path) else legacy_model_path if os.path.exists(legacy_model_path) else None
+    initial_paths = get_model_artifact_paths(model_type, base_dir=initial_model_base_dir)
+    legacy_model_path = initial_paths["legacy_model_path"] if initial_model_base_dir == "model" else None
+    existing_candidates = [initial_paths["model_path"]]
+    if legacy_model_path:
+        existing_candidates.append(legacy_model_path)
+    existing_model_path = next((path for path in existing_candidates if path and os.path.exists(path)), None)
     if existing_model_path:
         logger.info(f"Loading existing {model_type} model for continuous training...")
         try:
@@ -320,8 +349,9 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
         LearningRateScheduler(cosine_annealing_schedule),
         EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
         ModelCheckpoint(model_path, monitor='val_loss', save_best_only=True),
-        TensorBoard(log_dir=f'./logs/{model_type}')
+        TensorBoard(log_dir=tensorboard_log_dir)
     ]
+    callbacks.extend(extra_callbacks)
     
     history = model.fit(
         X_train, y_train,
