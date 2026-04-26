@@ -2,6 +2,7 @@ from fastapi import APIRouter, Body, HTTPException
 from typing import Dict, Any
 import logging
 import os
+from src.core.ml.model_types import sanitize_model_type
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +28,11 @@ async def calibrate_model_endpoint(
                 status_code=400, 
                 detail="model_name is required in request body (e.g., 'enhanced_cnn_lstm' or 'all')"
             )
+        if model_name != 'all':
+            try:
+                model_name = sanitize_model_type(model_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         
         calibration_data = request.get('calibration_data')
         if not calibration_data:
@@ -74,7 +80,7 @@ async def calibrate_model_endpoint(
                 
                 # Calibrate the model
                 logger.info(f"Calibrating model: {name}")
-                calibrated_model = calibrate_model(model, X_cal)
+                calibrated_model = calibrate_model(model, X_cal, y_cal)
                 
                 # Save calibrated model
                 calibrated_path = f"model/{name}_calibrated.h5"
