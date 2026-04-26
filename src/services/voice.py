@@ -5,7 +5,6 @@ Uses TensorFlow for audio detection and speech analysis
 
 import logging
 import numpy as np
-import tensorflow as tf
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import io
@@ -14,6 +13,13 @@ import os
 import asyncio
 from src.services.database import db_service
 from src.queue import safe_enqueue
+
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    tf = None
+    TF_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +38,7 @@ class VoiceProcessor:
             device: Device to run models on (not used with TensorFlow, kept for compatibility)
         """
         # Check GPU availability
-        gpus = tf.config.list_physical_devices('GPU')
+        gpus = tf.config.list_physical_devices('GPU') if TF_AVAILABLE else []
         self.device = 'GPU' if gpus else 'CPU'
         logger.info(f"Initializing VoiceProcessor on device: {self.device}")
         
@@ -56,6 +62,11 @@ class VoiceProcessor:
     def _load_models(self):
         """Load or create emotion recognition model using TensorFlow"""
         try:
+            if not TF_AVAILABLE:
+                logger.warning("TensorFlow not installed; voice processor will run in rule-based mode")
+                self.model = None
+                return
+
             # Try to load a pre-trained model if available
             model_path = "./model/voice_emotion_model.h5"
             if os.path.exists(model_path):
@@ -172,7 +183,8 @@ class VoiceProcessor:
                 
                 # Get predictions
                 predictions = self.model.predict(features, verbose=0)
-                probabilities = tf.nn.softmax(predictions[0]).numpy()
+                exp_scores = np.exp(predictions[0] - np.max(predictions[0]))
+                probabilities = exp_scores / np.sum(exp_scores)
                 
                 # Get predicted emotion
                 predicted_id = np.argmax(probabilities)

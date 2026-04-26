@@ -47,6 +47,8 @@ async def save_uploaded_file(file: UploadFile, user_id: str = "anonymous") -> st
             raise HTTPException(status_code=400, detail="Empty file uploaded")
             
         return file_location
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"File handling failure: {str(e)}")
         raise HTTPException(500, "File processing error") from e 

@@ -6,7 +6,7 @@ FastAPI service for EEG analysis, voice analysis, recommendations, chat, model c
 - EEG analysis from JSON or uploaded files
 - Voice emotion analysis from uploaded/raw audio
 - Recommendation and decision-support endpoints
-- Chat endpoint (uses Groq when configured)
+- Chat endpoint with async OpenRouter background mode
 - Model calibration endpoint
 - Optional Redis queue + MongoDB/InfluxDB persistence
 
@@ -35,7 +35,10 @@ Docs:
 ## Environment variables
 Important variables:
 - `API_PREFIX` (default: `/api/v1`)
-- `GROQ_API_KEY` (optional, enables LLM features)
+- `OPENROUTER_API_KEY` (optional, enables async LLM chat features)
+- `OPENROUTER_MODEL` (default: `openai/gpt-4o-mini`)
+- `OPENROUTER_SITE_URL` (optional, sent as OpenRouter referer)
+- `OPENROUTER_APP_NAME` (optional, sent as OpenRouter title)
 - `REQUIRE_AUTH` (default: `false`)
 - `ENABLE_DATABASES` (default: `true`)
 - `MONGODB_URI`, `MONGODB_DB`
@@ -60,7 +63,9 @@ EEG:
 - `POST /api/v1/eeg/detailed-report`
 - `POST /api/v1/eeg/recommendations`
 - `POST /api/v1/eeg/decision-support`
-- `POST /api/v1/eeg/chat`
+- `POST /api/v1/eeg/chat/submit`
+- `GET /api/v1/eeg/chat/status/{job_id}`
+- `GET /api/v1/eeg/chat/sse?job_id=...`
 
 Voice:
 - `POST /api/v1/voice/analyze`
@@ -116,6 +121,17 @@ Defined in `.github/workflows/`:
 - `docker-publish.yml`
 
 ## Notes
-- If `GROQ_API_KEY` is missing, recommendation/chat fall back to non-LLM behavior.
+- If `OPENROUTER_API_KEY` is missing, chat falls back to non-LLM behavior.
 - Persistence and queue failures are handled best-effort in most paths.
 - Keep credentials out of git; use secret management in CI/CD.
+
+## Background chat flow
+1. Submit a request with `POST /api/v1/eeg/chat/submit`.
+2. Open `GET /api/v1/eeg/chat/sse?job_id=...` to receive `queued`, `started`, `context_retrieved`, `generating_response`, `completed`, or `failed` events.
+3. Poll `GET /api/v1/eeg/chat/status/{job_id}` if SSE is not available.
+
+Run an RQ worker for the new queue:
+
+```bash
+python -m src.worker
+```

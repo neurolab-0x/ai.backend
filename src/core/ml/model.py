@@ -1,21 +1,8 @@
+from __future__ import annotations
+
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_auc_score
 from sklearn.utils import compute_class_weight
-from tensorflow.keras.layers import (
-    Conv1D, MaxPooling1D, Flatten, Dense, LSTM, Input, Dropout, 
-    BatchNormalization, Activation, Add, Concatenate, Attention, 
-    MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D, Bidirectional,
-    SpatialDropout1D, GaussianNoise, TimeDistributed, SeparableConv1D, Lambda
-)
-from tensorflow.keras.callbacks import (
-    ReduceLROnPlateau, EarlyStopping, ModelCheckpoint, 
-    TensorBoard, LearningRateScheduler
-)
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.regularizers import l1_l2
 import numpy as np
-from tensorflow.keras import Sequential
-import tensorflow as tf
 import math
 import time
 import os
@@ -23,8 +10,41 @@ import logging
 from datetime import datetime
 from typing import Tuple, Optional, Dict, List, Any
 
+try:
+    import tensorflow as tf
+    from tensorflow.keras.layers import (
+        Conv1D, MaxPooling1D, Flatten, Dense, LSTM, Input, Dropout,
+        BatchNormalization, Activation, Add, Concatenate, Attention,
+        MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D, Bidirectional,
+        SpatialDropout1D, GaussianNoise, TimeDistributed, SeparableConv1D, Lambda
+    )
+    from tensorflow.keras.callbacks import (
+        ReduceLROnPlateau, EarlyStopping, ModelCheckpoint,
+        TensorBoard, LearningRateScheduler
+    )
+    from tensorflow.keras.models import Model
+    from tensorflow.keras.optimizers import Adam
+    from tensorflow.keras.regularizers import l1_l2
+    from tensorflow.keras import Sequential
+    TF_AVAILABLE = True
+except ImportError:
+    tf = None
+    Conv1D = MaxPooling1D = Flatten = Dense = LSTM = Input = Dropout = None
+    BatchNormalization = Activation = Add = Concatenate = Attention = None
+    MultiHeadAttention = LayerNormalization = GlobalAveragePooling1D = None
+    Bidirectional = SpatialDropout1D = GaussianNoise = TimeDistributed = None
+    SeparableConv1D = Lambda = None
+    ReduceLROnPlateau = EarlyStopping = ModelCheckpoint = TensorBoard = LearningRateScheduler = None
+    Model = Adam = l1_l2 = Sequential = None
+    TF_AVAILABLE = False
+
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _require_tensorflow():
+    if not TF_AVAILABLE:
+        raise RuntimeError("TensorFlow is not installed")
 
 def cosine_annealing_schedule(epoch, lr):
     """Cosine annealing learning rate schedule."""
@@ -118,6 +138,7 @@ def attention_lstm_layer(x, units, dropout_rate=0.3):
 
 def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=3, **kwargs):
     """Build model architecture without training."""
+    _require_tensorflow()
     dropout_rate = kwargs.get('dropout_rate', 0.3)
     use_separable = kwargs.get('use_separable', True)
     use_relative_pos = kwargs.get('use_relative_pos', True)
@@ -194,6 +215,7 @@ create_model = build_model
 
 def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwargs):
     """Enhanced hybrid model training with improved architectures."""
+    _require_tensorflow()
     batch_size = kwargs.get('batch_size', 32)
     epochs = kwargs.get('epochs', 30)
     
@@ -242,7 +264,7 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     save_model(model, model_path)
     return model, history
 
-def save_model(model: tf.keras.Model, model_path: str) -> None:
+def save_model(model, model_path: str) -> None:
     """Save model to disk with directory creation."""
     try:
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
@@ -255,6 +277,9 @@ def save_model(model: tf.keras.Model, model_path: str) -> None:
 def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
     """Load a trained model, fallback to a base model if not found."""
     try:
+        if not TF_AVAILABLE:
+            logger.warning("TensorFlow is not installed; calibrated models are unavailable")
+            return None
         # standardizing path if only architecture name is provided
         if not model_path.endswith('.h5'):
             model_path = os.path.join("model", f"{model_path}.h5")
@@ -271,9 +296,14 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
         logger.error(f"Error loading model from {model_path}: {str(e)}")
         return None
 
-def calibrate_model(model: tf.keras.Model, calibration_data: np.ndarray) -> tf.keras.Model:
+def calibrate_model(model, calibration_data: np.ndarray, calibration_labels: np.ndarray):
     """Calibrate model predictions using temperature scaling."""
     try:
+        _require_tensorflow()
+        calibration_labels = np.asarray(calibration_labels)
+        if calibration_labels.size == 0:
+            raise ValueError("Calibration labels are required for model calibration")
+
         temperature = tf.Variable(1.0, trainable=True)
         calibrated_model = Sequential([model, Lambda(lambda x: x / temperature)])
         calibrated_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
@@ -282,10 +312,9 @@ def calibrate_model(model: tf.keras.Model, calibration_data: np.ndarray) -> tf.k
         for _ in range(100):
             with tf.GradientTape() as tape:
                 predictions = calibrated_model(calibration_data)
-                y_true = np.argmax(predictions, axis=1) # Dummy for compilation, need actual labels if training temperature
-                # Note: This is an unsupervised-ish proxy or needs true labels. 
-                # src/models/model.py has a better implementation for this.
-                loss = tf.keras.losses.sparse_categorical_crossentropy(y_true, predictions)
+                loss = tf.reduce_mean(
+                    tf.keras.losses.sparse_categorical_crossentropy(calibration_labels, predictions)
+                )
             gradients = tape.gradient(loss, [temperature])
             optimizer.apply_gradients(zip(gradients, [temperature]))
         
@@ -295,8 +324,9 @@ def calibrate_model(model: tf.keras.Model, calibration_data: np.ndarray) -> tf.k
         logger.error(f"Error calibrating model: {str(e)}")
         raise
 
-def evaluate_model(model: tf.keras.Model, test_data: np.ndarray, test_labels: np.ndarray, calibrate=True) -> Dict[str, Any]:
+def evaluate_model(model, test_data: np.ndarray, test_labels: np.ndarray, calibrate=True) -> Dict[str, Any]:
     """Comprehensive model evaluation."""
+    _require_tensorflow()
     if len(test_data.shape) == 2:
         test_data = test_data.reshape(-1, test_data.shape[1], 1)
         
@@ -323,6 +353,7 @@ def evaluate_model(model: tf.keras.Model, test_data: np.ndarray, test_labels: np
 
 def model_comparison(X_train, y_train, X_test, y_test, n_repeats=3):
     """Compare multiple model architectures."""
+    _require_tensorflow()
     model_types = ['original', 'enhanced_cnn_lstm', 'resnet_lstm', 'transformer']
     results = {}
     

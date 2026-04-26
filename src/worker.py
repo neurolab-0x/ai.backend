@@ -8,7 +8,7 @@ from src.utils.logging_setup import configure_logging
 
 def main():
     configure_logging()
-    queues = os.getenv("RQ_QUEUES", "default").split(",")
+    queues = os.getenv("RQ_QUEUES", "default,training,persistence,chat").split(",")
     queues = [q.strip() for q in queues if q.strip()]
     worker = Worker(queues, connection=get_redis())
     worker.work(with_scheduler=False)

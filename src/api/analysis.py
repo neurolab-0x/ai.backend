@@ -1,11 +1,33 @@
-from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException
+import asyncio
+import json
+from datetime import datetime
 from typing import Optional, Dict, Any, List
+
+from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException, Request, status
+from fastapi.responses import StreamingResponse as StarletteStreamingResponse
+from pydantic import BaseModel, Field
 import logging
 import base64
-from datetime import datetime
 
 from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
+from src.services.chat import generate_chat_exchange, generate_conversation_title
+from src.queue import get_async_redis, publish_job_event, read_job_state
+
+try:
+    from rq.job import Job
+    from rq.exceptions import NoSuchJobError
+    from src.queue import get_queue, track_job
+    RQ_AVAILABLE = True
+except ImportError:
+    Job = None
+
+    class NoSuchJobError(Exception):
+        pass
+
+    RQ_AVAILABLE = False
+    get_queue = None
+    track_job = None
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -18,6 +40,24 @@ def get_ml_processor():
         from src.services.analysis import MLProcessor
         _ml_processor = MLProcessor()
     return _ml_processor
+
+
+def require_rq() -> None:
+    if not RQ_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat queue is unavailable because RQ is not installed.",
+        )
+
+
+class ChatJobRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="User message to send to the assistant")
+    subject_id: Optional[str] = Field(None, description="User ID for personalized retrieval")
+    conversation_id: Optional[str] = Field(None, description="Backend conversation identifier")
+    history: Optional[List[Dict[str, Any]]] = Field(None, description="Recent conversation history")
+    current_title: Optional[str] = Field(None, description="Current conversation title")
+    include_health_data: bool = Field(True, description="Whether health history should be retrieved")
+    context_limit: int = Field(8, ge=1, le=25, description="How many history items to retrieve from storage")
 
 @router.post('/upload', summary="Advanced EEG analysis", response_description="Cognitive state report")
 async def process_uploaded_file(
@@ -201,47 +241,120 @@ async def get_decision_support(
         logger.error(f"Error in decision support: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post('/chat', summary="AI Chat response")
-async def get_chat_response(
-    message: str = Body(..., embed=True),
-    subject_id: Optional[str] = Body(None, description="User ID for personalization")
-):
-    """Get a chat response from the AI assistant"""
+@router.post('/chat/submit', status_code=status.HTTP_202_ACCEPTED, summary="Submit AI chat request for background processing")
+async def submit_chat_job(data: ChatJobRequest):
+    """Queue a chat request and return immediately with a job id."""
     try:
-        ml_processor = get_ml_processor()
-        if not ml_processor.recommendation_engine.client:
-            return {"response": "I'm sorry, I'm currently running in offline mode. How can I help you with your EEG analysis today?"}
-            
-        # Fetch history if subject_id is provided
-        history_context = ""
-        if subject_id:
-            from src.services.database import db_service
-            history = await db_service.get_user_history(subject_id, limit=3)
-            if history:
-                history_str = "\n".join([
-                    f"- {h['time']}: ID {h['run_id']}, Accuracy: {h['accuracy']:.2f}, Loss: {h['loss']:.2f}"
-                    for h in history
-                ])
-                history_context = f"\nUser Historical Session Trends (Last 3 Sessions):\n{history_str}\n"
-
-        system_content = "You are the NeuroLab AI assistant, an expert in neural health and EEG analysis. Provide helpful, concise, and scientific advice."
-        if history_context:
-            system_content += f"\n\nContext for the current user (ID: {subject_id}):{history_context}\nUse this history to personalize your advice if relevant."
-
-        completion = ml_processor.recommendation_engine.client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": message}
-            ],
-            temperature=0.7,
-            max_tokens=1000  # Increased for potentially more detailed personalized responses
+        require_rq()
+        q = get_queue("chat")
+        job = q.enqueue(
+            "src.jobs.chat.process_chat_request",
+            data.dict(),
+            job_timeout=60 * 10,
+            result_ttl=60 * 60 * 24,
         )
-        return {"response": completion.choices[0].message.content}
+        track_job("chat", job.id)
+        initial_event = publish_job_event(
+            "chat",
+            job.id,
+            "queued",
+            {
+                "conversation_id": data.conversation_id,
+                "subject_id": data.subject_id,
+            },
+        )
+        return {
+            "job_id": job.id,
+            "status": "queued",
+            "conversation_id": data.conversation_id,
+            "events_url": f"/api/v1/eeg/chat/sse?job_id={job.id}",
+            "status_url": f"/api/v1/eeg/chat/status/{job.id}",
+            "submitted_at": initial_event["timestamp"],
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in chat response: {str(e)}")
+        logger.error(f"Error queuing chat job: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/chat/status/{job_id}', summary="Get background chat job status")
+async def get_chat_job_status(job_id: str):
+    """Return the latest known state for a background chat job."""
+    state = read_job_state("chat", job_id)
+    rq_status = None
+    if RQ_AVAILABLE:
+        try:
+            job = Job.fetch(job_id, connection=get_queue("chat").connection)
+            rq_status = job.get_status(refresh=True)
+        except NoSuchJobError:
+            rq_status = None
+        except Exception as exc:
+            logger.warning(f"Failed to read RQ status for chat job {job_id}: {exc}")
+
+    if state is None and rq_status is None:
+        raise HTTPException(status_code=404, detail=f"Chat job {job_id} not found")
+
+    return {
+        "job_id": job_id,
+        "rq_status": rq_status,
+        "state": state,
+    }
+
+
+@router.get('/chat/sse', summary="Listen for background chat job events")
+async def stream_chat_job_events(
+    request: Request,
+    job_id: str,
+) -> StarletteStreamingResponse:
+    """Server-Sent Events stream for queued chat retrieval and LLM generation updates."""
+
+    async def event_gen():
+        redis = get_async_redis()
+        pubsub = redis.pubsub()
+        channel = f"neurolab:job:events:chat:{job_id}"
+        try:
+            state = read_job_state("chat", job_id)
+            yield f"event: ready\ndata: {json.dumps({'job_id': job_id, 'state': state}, default=str)}\n\n".encode("utf-8")
+            await pubsub.subscribe(channel)
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+                if message and message.get("data"):
+                    data = message["data"]
+                    if isinstance(data, (bytes, bytearray)):
+                        data = data.decode("utf-8")
+                    payload = json.loads(data)
+                    event_name = payload.get("event", "message")
+                    yield f"event: {event_name}\ndata: {json.dumps(payload, default=str)}\n\n".encode("utf-8")
+                else:
+                    yield b"event: ping\ndata: {}\n\n"
+                await asyncio.sleep(0.05)
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+            except Exception:
+                logger.debug("Chat SSE unsubscribe failed for job %s", job_id)
+            await pubsub.close()
+            await redis.close()
+
+    return StarletteStreamingResponse(event_gen(), media_type="text/event-stream")
+
+@router.post('/chat/generate-name', summary="Generate a short chat conversation name")
+async def generate_chat_name(
+    history: List[Dict[str, Any]] = Body(..., embed=True),
+    subject_id: Optional[str] = Body(None, description="User ID for personalization")
+):
+    """Generate a short title for a chat conversation."""
+    try:
+        title = await generate_conversation_title(history, subject_id=subject_id)
+        return {"name": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating chat name: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post('/generate-notes', summary="Generate session notes")

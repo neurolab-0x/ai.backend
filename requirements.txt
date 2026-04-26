@@ -13,6 +13,8 @@ minio>=7.2.0
 influxdb-client>=1.36.0
 motor>=3.6.0
 groq>=0.11.0
+grpcio>=1.68.1
+httpx>=0.27.0
 
 # Data Processing & EEG Analysis
 numpy==1.26.4
