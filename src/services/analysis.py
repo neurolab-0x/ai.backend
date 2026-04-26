@@ -429,7 +429,9 @@ class MLProcessor:
         subject_id: str = "anonymous",
         session_id: str = "default_session",
         save_report: bool = False,
-        model_type: Optional[str] = None
+        model_type: Optional[str] = None,
+        overlap: float = 0.0,
+        simple_mode: bool = True
     ) -> Dict[str, Any]:
         """
         Generate a detailed report with comprehensive recommendations.
@@ -446,7 +448,14 @@ class MLProcessor:
         """
         try:
             # Process the data first
-            result = await self.process_eeg_data(data, subject_id, session_id, model_type=model_type)
+            result = await self.process_eeg_data(
+                data,
+                subject_id,
+                session_id,
+                model_type=model_type,
+                overlap=overlap,
+                simple_mode=simple_mode,
+            )
             
             # Generate detailed report using NLP engine
             detailed_report = await self.recommendation_engine.generate_detailed_report(
@@ -480,10 +489,15 @@ class MLProcessor:
         Returns:
             Dictionary containing status information
         """
+        loaded_models = list(self.model_manager.models.keys())
+        model_files = self.model_manager.list_model_files()
+
         return {
-            'model_loaded': self.model_loaded,
-            'model_path': self.model_path,
-            'model_exists': os.path.exists(self.model_path),
-            'model_type': type(self.model).__name__ if self.model else None,
+            'model_loaded': bool(loaded_models),
+            'model_path': self.model_manager.model_dir,
+            'model_exists': bool(model_files),
+            'model_type': loaded_models[0] if loaded_models else None,
+            'models_loaded': loaded_models,
+            'tensorflow_available': self.model_manager.tensorflow_available,
             'recommendation_engine_loaded': self.recommendation_engine is not None
         }
