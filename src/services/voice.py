@@ -293,12 +293,12 @@ class VoiceProcessor:
             return result
             
         except Exception as e:
-            logger.error(f"Error processing audio: {str(e)}")
+            logger.exception("Error processing audio")
             return {
                 'emotion': 'neutral',
                 'confidence': 0.0,
                 'mental_state': 0,
-                'error': str(e),
+                'error': 'Audio processing failed',
                 'timestamp': datetime.now().isoformat()
             }
     

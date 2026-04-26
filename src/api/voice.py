@@ -188,9 +188,9 @@ async def analyze_raw_audio(
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error analyzing raw audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Raw audio analysis failed: {str(e)}")
+    except Exception:
+        logger.exception("Error analyzing raw audio")
+        raise HTTPException(status_code=500, detail="Raw audio analysis failed")
 
 
 @router.get("/health", summary="Check voice processor health")
