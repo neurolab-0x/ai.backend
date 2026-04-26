@@ -5,7 +5,7 @@ FastAPI service for EEG analysis, voice analysis, recommendations, chat, model c
 ## What this service does
 - EEG analysis from JSON or uploaded files
 - Voice emotion analysis from uploaded/raw audio
-- Recommendation and decision-support endpoints
+- Recommendation and non-diagnostic history summary endpoints
 - Chat endpoint with async OpenRouter background mode
 - Model calibration endpoint
 - Optional Redis queue + MongoDB/InfluxDB persistence
@@ -28,6 +28,12 @@ pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+Optional install groups:
+- `pip install -r requirements-runtime.txt`
+- `pip install -r requirements-ml.txt`
+- `pip install -r requirements-voice.txt`
+- `pip install -r requirements-dev.txt`
+
 Docs:
 - `http://localhost:8000/api/v1/docs`
 - `http://localhost:8000/docs` (redirect)
@@ -41,6 +47,8 @@ Important variables:
 - `OPENROUTER_APP_NAME` (optional, sent as OpenRouter title)
 - `ENABLE_CHAT_GRPC` (default: `false`; keeps the old gRPC chat server disabled)
 - `REQUIRE_AUTH` (default: `false`)
+- `API_BEARER_TOKEN` (required when `REQUIRE_AUTH=true`)
+- `ALLOWED_ORIGINS` (required in production)
 - `ENABLE_DATABASES` (default: `true`)
 - `MONGODB_URI`, `MONGODB_DB`
 - `INFLUXDB_URL`, `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET`
@@ -124,6 +132,7 @@ Defined in `.github/workflows/`:
 ## Notes
 - If `OPENROUTER_API_KEY` is missing, chat falls back to non-LLM behavior.
 - Persistence and queue failures are handled best-effort in most paths.
+- In production, the service now refuses to start with unsafe CORS, DB secret, MinIO secret, or auth-token defaults.
 - Keep credentials out of git; use secret management in CI/CD.
 
 ## Background chat flow
