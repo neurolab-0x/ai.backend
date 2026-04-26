@@ -113,6 +113,20 @@ class DatabaseService:
             logger.error(f"Error storing voice data to MongoDB: {e}")
             return None
 
+    async def store_chat_exchange(self, chat_data: Dict[str, Any]) -> Optional[str]:
+        """Store chat job output and metadata to MongoDB."""
+        if not self.enabled or self.db is None:
+            return None
+
+        try:
+            if "timestamp" not in chat_data:
+                chat_data["timestamp"] = datetime.now()
+            result = await self.db.chat_exchanges.insert_one(chat_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Error storing chat exchange to MongoDB: {e}")
+            return None
+
     async def store_detected_event(self, event_data: Dict[str, Any]) -> str:
         """Store a specific detected neural event to MongoDB"""
         if not self.enabled or self.db is None:
@@ -232,6 +246,83 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error storing model version: {e}")
             return "error"
+
+    async def create_training_run(self, run_data: Dict[str, Any]) -> Optional[str]:
+        """Create a persisted training run record in MongoDB."""
+        if not self.enabled or self.db is None:
+            return None
+
+        try:
+            if "created_at" not in run_data:
+                run_data["created_at"] = datetime.now()
+            if "updated_at" not in run_data:
+                run_data["updated_at"] = run_data["created_at"]
+            result = await self.db.training_runs.insert_one(run_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Error creating training run: {e}")
+            return None
+
+    async def update_training_run(self, job_id: str, updates: Dict[str, Any]) -> bool:
+        """Update a persisted training run by job_id."""
+        if not self.enabled or self.db is None:
+            return False
+
+        try:
+            updates = dict(updates)
+            updates["updated_at"] = datetime.now()
+            result = await self.db.training_runs.update_one(
+                {"job_id": job_id},
+                {"$set": updates},
+                upsert=False,
+            )
+            return result.matched_count > 0
+        except Exception as e:
+            logger.error(f"Error updating training run {job_id}: {e}")
+            return False
+
+    async def get_training_run(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a persisted training run by job_id."""
+        if not self.enabled or self.db is None:
+            return None
+
+        try:
+            doc = await self.db.training_runs.find_one({"job_id": job_id})
+            if not doc:
+                return None
+            doc["_id"] = str(doc["_id"])
+            return doc
+        except Exception as e:
+            logger.error(f"Error fetching training run {job_id}: {e}")
+            return None
+
+    async def list_training_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """List persisted training runs newest first."""
+        if not self.enabled or self.db is None:
+            return []
+
+        runs: List[Dict[str, Any]] = []
+        try:
+            cursor = self.db.training_runs.find({}).sort("created_at", -1).limit(limit)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                runs.append(doc)
+            return runs
+        except Exception as e:
+            logger.error(f"Error listing training runs: {e}")
+            return []
+
+    async def delete_training_run(self, job_id: str) -> bool:
+        """Delete a persisted training run by job_id."""
+        if not self.enabled or self.db is None:
+            return False
+
+        try:
+            result = await self.db.training_runs.delete_one({"job_id": job_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Error deleting training run {job_id}: {e}")
+            return False
             
     async def close(self):
         """Close both database clients"""
