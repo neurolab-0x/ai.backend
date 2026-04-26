@@ -7,8 +7,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List
 
 import numpy as np
-from rq import get_current_job
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from rq import get_current_job
+except ImportError:
+    def get_current_job():
+        return None
 
 from src.core.ml.model import (
     DEFAULT_FEATURE_NAMES,
@@ -22,9 +27,6 @@ from src.core.ml.model import (
     tf,
 )
 from src.jobs.training_persistence import update_training_run
-from src.preprocessing.labeling import label_eeg_states
-from src.preprocessing.load_data import load_data
-from src.preprocessing.preprocess import preprocess_data
 from src.queue import publish_job_event
 from src.services.storage import MinioStorageService
 from src.services.training_monitor import TrainingMonitor
@@ -108,6 +110,19 @@ def _artifact_descriptor(label: str, kind: str, **extra) -> Dict[str, Any]:
     }
     descriptor.update(extra)
     return descriptor
+
+
+def _download_object_artifact(
+    storage_service: MinioStorageService,
+    descriptor: Dict[str, Any],
+    destination_path: str,
+) -> str:
+    downloaded = storage_service.download_artifact(descriptor, destination_path)
+    if not downloaded:
+        bucket_key = descriptor.get("bucket_key", "unknown")
+        object_name = descriptor.get("object_name", "unknown")
+        raise FileNotFoundError(f"Failed to download artifact {bucket_key}/{object_name}")
+    return downloaded
 
 
 def _register_object_artifact(
@@ -319,7 +334,7 @@ def train_from_npz(
         y_train = data["y_train"]
         X_test = data["X_test"] if "X_test" in data else None
         y_test = data["y_test"] if "y_test" in data else None
-        if os.path.exists(npz_path):
+        if os.path.exists(npz_path) and "training_bundle" not in (artifacts.get("objects") or {}):
             _register_object_artifact(
                 storage_service,
                 artifacts,
@@ -602,17 +617,27 @@ def train_from_npz(
         monitor.close()
 
 
-def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> Dict[str, Any]:
+def train_from_file(
+    file_path: str,
+    config: Dict[str, Any],
+    model_type: str,
+    existing_artifacts: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     job_id = _current_job_id()
     storage_service = MinioStorageService()
-    artifacts: Dict[str, Any] = {
+    artifacts: Dict[str, Any] = dict(existing_artifacts or {})
+    artifacts.update({
         "uploaded_file_local_path": file_path,
         "uploaded_file_name": os.path.basename(file_path),
-    }
+    })
     npz_path = os.path.join("temp", f"{job_id}.npz")
 
     try:
-        if storage_service.enabled:
+        from src.preprocessing.labeling import label_eeg_states
+        from src.preprocessing.load_data import load_data
+        from src.preprocessing.preprocess import preprocess_data
+
+        if "uploaded_dataset" not in (artifacts.get("objects") or {}) and storage_service.enabled:
             try:
                 object_name = storage_service.upload_file(file_path, "training", f"runs/{job_id}/input/{os.path.basename(file_path)}")
                 if object_name:
@@ -626,7 +651,7 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
                     )
             except Exception as exc:
                 logger.warning(f"Training input upload failed: {exc}")
-        else:
+        elif "uploaded_dataset" not in (artifacts.get("objects") or {}):
             artifacts.setdefault("objects", {})
             artifacts["objects"]["uploaded_dataset"] = _artifact_descriptor(
                 "Uploaded training dataset",
@@ -663,16 +688,62 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
         _cleanup_file(file_path)
 
 
-def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]:
+def train_from_bundle_object(bundle_descriptor: Dict[str, Any], config: Dict[str, Any], model_type: str) -> Dict[str, Any]:
+    job_id = _current_job_id()
+    storage_service = MinioStorageService()
+    run_paths = _job_run_paths(job_id)
+    input_dir = os.path.join(run_paths["run_root"], "input")
+    local_npz_path = os.path.join(input_dir, "training_bundle.npz")
+    artifacts: Dict[str, Any] = {
+        "storage_backend": "minio" if storage_service.enabled else "local",
+        "objects": {"training_bundle": dict(bundle_descriptor)},
+    }
+    _update_run(job_id, "downloading_input", 0.02, "Downloading training bundle...", artifacts=artifacts)
+    _publish(job_id, "downloading_input", {"progress": 0.02})
+    downloaded_path = _download_object_artifact(storage_service, bundle_descriptor, local_npz_path)
+    return train_from_npz(
+        downloaded_path,
+        config,
+        model_type,
+        existing_artifacts=artifacts,
+    )
+
+
+def train_from_file_object(file_descriptor: Dict[str, Any], config: Dict[str, Any], model_type: str) -> Dict[str, Any]:
+    job_id = _current_job_id()
+    storage_service = MinioStorageService()
+    run_paths = _job_run_paths(job_id)
+    input_dir = os.path.join(run_paths["run_root"], "input")
+    filename = os.path.basename(file_descriptor.get("object_name", "dataset.bin"))
+    local_file_path = os.path.join(input_dir, filename)
+    artifacts: Dict[str, Any] = {
+        "storage_backend": "minio" if storage_service.enabled else "local",
+        "uploaded_file_name": file_descriptor.get("metadata", {}).get("original_filename") or filename,
+        "objects": {"uploaded_dataset": dict(file_descriptor)},
+    }
+    _update_run(job_id, "downloading_input", 0.02, "Downloading uploaded dataset...", artifacts=artifacts)
+    _publish(job_id, "downloading_input", {"progress": 0.02})
+    downloaded_path = _download_object_artifact(storage_service, file_descriptor, local_file_path)
+    return train_from_file(downloaded_path, config, model_type, existing_artifacts=artifacts)
+
+
+def compare_models_from_npz(
+    npz_path: str,
+    n_repeats: int = 3,
+    existing_artifacts: Optional[Dict[str, Any]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     job_id = _current_job_id()
     storage_service = MinioStorageService()
     run_paths = _job_run_paths(job_id)
     os.makedirs(run_paths["metrics_dir"], exist_ok=True)
-    artifacts: Dict[str, Any] = {
+    comparison_config = dict(config or {})
+    artifacts: Dict[str, Any] = dict(existing_artifacts or {})
+    artifacts.update({
         "comparison_bundle_local_path": npz_path,
         "storage_backend": "minio" if storage_service.enabled else "local",
         "run_root_local_dir": run_paths["run_root"],
-    }
+    })
     monitor = TrainingMonitor()
     try:
         _set_meta(0.05, "Loading data for comparison...")
@@ -683,7 +754,7 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
         y_train = data["y_train"]
         X_test = data["X_test"]
         y_test = data["y_test"]
-        if os.path.exists(npz_path):
+        if os.path.exists(npz_path) and "comparison_bundle" not in (artifacts.get("objects") or {}):
             _register_object_artifact(
                 storage_service,
                 artifacts,
@@ -695,7 +766,17 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
                 kind="dataset_bundle",
                 content_type="application/octet-stream",
             )
-        monitor.log_training_event(job_id, "STARTED", {"job_id": job_id, "run_type": "comparison", "n_repeats": n_repeats})
+        monitor.log_training_event(
+            job_id,
+            "STARTED",
+            {
+                "job_id": job_id,
+                "run_type": "comparison",
+                "n_repeats": n_repeats,
+                "subject_id": comparison_config.get("subject_id"),
+                "session_id": comparison_config.get("session_id"),
+            },
+        )
 
         _set_meta(0.1, "Comparing model architectures...")
         _update_run(job_id, "comparing", 0.1, "Comparing model architectures...", artifacts=artifacts)
@@ -725,8 +806,28 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
             artifacts=public_artifacts,
             completed_at=datetime.now(),
         )
-        _publish(job_id, "completed", {"job_id": job_id, "run_type": "comparison", "metrics": results, "artifacts": public_artifacts})
-        monitor.log_training_event(job_id, "COMPLETED", {"job_id": job_id, "run_type": "comparison"})
+        _publish(
+            job_id,
+            "completed",
+            {
+                "job_id": job_id,
+                "run_type": "comparison",
+                "subject_id": comparison_config.get("subject_id"),
+                "session_id": comparison_config.get("session_id"),
+                "metrics": results,
+                "artifacts": public_artifacts,
+            },
+        )
+        monitor.log_training_event(
+            job_id,
+            "COMPLETED",
+            {
+                "job_id": job_id,
+                "run_type": "comparison",
+                "subject_id": comparison_config.get("subject_id"),
+                "session_id": comparison_config.get("session_id"),
+            },
+        )
         return results
     except Exception as exc:
         _set_meta(1.0, f"Model comparison failed: {exc}")
@@ -740,8 +841,29 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
             artifacts=public_artifacts,
             completed_at=datetime.now(),
         )
-        _publish(job_id, "failed", {"job_id": job_id, "run_type": "comparison", "error": str(exc), "artifacts": public_artifacts})
-        monitor.log_training_event(job_id, "FAILED", {"job_id": job_id, "run_type": "comparison", "error": str(exc)})
+        _publish(
+            job_id,
+            "failed",
+            {
+                "job_id": job_id,
+                "run_type": "comparison",
+                "subject_id": comparison_config.get("subject_id"),
+                "session_id": comparison_config.get("session_id"),
+                "error": str(exc),
+                "artifacts": public_artifacts,
+            },
+        )
+        monitor.log_training_event(
+            job_id,
+            "FAILED",
+            {
+                "job_id": job_id,
+                "run_type": "comparison",
+                "subject_id": comparison_config.get("subject_id"),
+                "session_id": comparison_config.get("session_id"),
+                "error": str(exc),
+            },
+        )
         raise
     finally:
         _cleanup_file(npz_path)
@@ -750,3 +872,24 @@ def compare_models_from_npz(npz_path: str, n_repeats: int = 3) -> Dict[str, Any]
         except Exception:
             logger.debug("Failed to remove comparison run directory %s", run_paths["run_root"])
         monitor.close()
+
+
+def compare_models_from_object(bundle_descriptor: Dict[str, Any], n_repeats: int = 3, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    job_id = _current_job_id()
+    storage_service = MinioStorageService()
+    run_paths = _job_run_paths(job_id)
+    input_dir = os.path.join(run_paths["run_root"], "input")
+    local_npz_path = os.path.join(input_dir, "comparison_bundle.npz")
+    artifacts: Dict[str, Any] = {
+        "storage_backend": "minio" if storage_service.enabled else "local",
+        "objects": {"comparison_bundle": dict(bundle_descriptor)},
+    }
+    _update_run(job_id, "downloading_input", 0.02, "Downloading comparison bundle...", artifacts=artifacts)
+    _publish(job_id, "downloading_input", {"progress": 0.02})
+    downloaded_path = _download_object_artifact(storage_service, bundle_descriptor, local_npz_path)
+    return compare_models_from_npz(
+        downloaded_path,
+        n_repeats=n_repeats,
+        existing_artifacts=artifacts,
+        config=config,
+    )
