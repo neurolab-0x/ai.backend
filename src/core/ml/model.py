@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime
 from typing import Tuple, Optional, Dict, List, Any
+from src.core.ml.model_types import sanitize_model_type
 
 try:
     import tensorflow as tf
@@ -290,20 +291,17 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
 
         base_dir = os.path.abspath("model")
 
-        # Standardize path if only architecture name is provided
-        if not model_path.endswith('.h5'):
-            model_path = os.path.join("model", f"{model_path}.h5")
+        # Treat input as a model identifier/basename, never as a full path.
+        model_name = os.path.basename(str(model_path))
+        if model_name.endswith('.h5'):
+            model_name = model_name[:-3]
+        model_name = sanitize_model_type(model_name)
 
-        normalized_model_path = os.path.abspath(os.path.normpath(model_path))
-        if os.path.commonpath([base_dir, normalized_model_path]) != base_dir:
-            logger.warning(f"Rejected model path outside model directory: {model_path}")
-            return None
+        normalized_model_path = os.path.join(base_dir, f"{model_name}.h5")
 
         if not os.path.exists(normalized_model_path):
             logger.warning(f"Model file not found at {normalized_model_path}. Creating base model.")
-            # Default architecture if not specified in path
-            arch = os.path.basename(normalized_model_path).replace('.h5', '') if '.h5' in normalized_model_path else 'enhanced_cnn_lstm'
-            return build_model(arch)
+            return build_model(model_name)
         model = tf.keras.models.load_model(normalized_model_path)
         logger.info(f"Model loaded successfully from {normalized_model_path}")
         return model
