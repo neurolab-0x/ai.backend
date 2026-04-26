@@ -210,6 +210,8 @@ def process_streaming_chunk(
         # 3. Model Inference
         model_type = sanitize_model_type(model_type)
         model = model_manager.get_model(model_type, warmup=False)
+        scaler = model_manager.get_scaler(model_type)
+        metadata = model_manager.get_metadata(model_type)
         
         if model:
             # Prepare input shape
@@ -232,12 +234,19 @@ def process_streaming_chunk(
                         eeg_channels=list(df.columns), 
                         simple_mode=True
                     )
-                    
+                    expected_features = metadata.get("input_features") if metadata else None
+                    if not expected_features:
+                        raise RuntimeError(f"Metadata missing input_features for model_type={model_type}")
+                    if scaler is None:
+                        raise RuntimeError(f"Scaler artifact missing for model_type={model_type}")
+                    missing_cols = [col for col in expected_features if col not in features_df.columns]
+                    if missing_cols:
+                        raise RuntimeError(f"Streaming features missing expected columns: {missing_cols}")
+                    scaled_features = scaler.transform(features_df[expected_features].values)
                     # features_df is (n_epochs, 5). Reshape to (n_epochs, 5, 1)
-                    X_input = features_df.values.reshape(-1, 5, 1)
+                    X_input = scaled_features.reshape(-1, len(expected_features), 1)
                 except Exception as e:
                     logger.error(f"Feature extraction failed in streaming: {e}")
-                    # Fallback or re-raise
                     raise e
                     
             elif len(input_shape) == 3: # (None, time, channels) - RAW DATA MODEL
@@ -279,15 +288,10 @@ def process_streaming_chunk(
                 confidence = float(np.max(np.mean(probs, axis=0))) if len(probs) else 0.0
             except Exception as e:
                 logger.error(f"Inference failed: {e}")
-                dominant_state = 0
-                confidence = 0.0
-                predicted_states = []
+                raise RuntimeError("Model inference failed") from e
                 
         else:
-            # No model, return dummy
-            dominant_state = 0
-            confidence = 0.0
-            predicted_states = []
+            raise RuntimeError(f"Model unavailable for model_type={model_type}")
             
         result = {
             "predicted_states": predicted_states,

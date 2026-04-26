@@ -294,7 +294,8 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
             'preprocessing_steps': [],
             'feature_importance': {},
             'signal_quality': {},
-            'validation_results': {}
+            'validation_results': {},
+            'feature_names': [],
         }
         
         # Create cache directory if specified
@@ -355,6 +356,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         
         logger.info(f"Feature extraction complete. Shape: {df_features.shape}")
         metadata['preprocessing_steps'].append('feature_extraction')
+        metadata['feature_names'] = [col for col in df_features.columns if col != target_column]
         if len(df_features) < len(df):
             pruned_count = len(df) - len(df_features)
             logger.info(f"Pruned {pruned_count} samples due to poor signal quality")
@@ -386,6 +388,8 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
             logger.info("Scaling features...")
             scaler = StandardScaler()
             X_normalized = scaler.fit_transform(X_inference)
+            metadata['scaler'] = scaler
+            metadata['feature_names'] = list(df_features.columns)
             metadata['preprocessing_steps'].append('feature_scaling')
             
             logger.info(f"Preprocessing complete! Inference data shape: {X_normalized.shape}")
@@ -410,6 +414,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         scaler = RobustScaler() if use_robust_scaler else StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
+        metadata['scaler'] = scaler
         metadata['preprocessing_steps'].append('feature_scaling')
         
         # Augment training data

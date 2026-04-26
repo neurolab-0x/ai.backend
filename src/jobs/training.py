@@ -5,8 +5,17 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 from rq import get_current_job
+from sklearn.preprocessing import StandardScaler
 
-from src.core.ml.model import evaluate_model, model_comparison, train_hybrid_model
+from src.core.ml.model import (
+    DEFAULT_FEATURE_NAMES,
+    evaluate_model,
+    get_model_artifact_paths,
+    model_comparison,
+    save_model_metadata,
+    save_scaler_artifact,
+    train_hybrid_model,
+)
 from src.jobs.training_persistence import update_training_run
 from src.preprocessing.labeling import label_eeg_states
 from src.preprocessing.load_data import load_data
@@ -57,6 +66,18 @@ def _cleanup_file(path: Optional[str]) -> None:
         pass
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items() if k != "scaler"}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return str(value)
+
+
 def _build_completed_event(
     *,
     job_id: str,
@@ -82,6 +103,9 @@ def train_from_npz(
     config: Dict[str, Any],
     model_type: str,
     existing_artifacts: Optional[Dict[str, Any]] = None,
+    existing_scaler: Any = None,
+    feature_names: Optional[list[str]] = None,
+    dataset_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     RQ job: loads arrays from npz, trains a model, evaluates, uploads artifact.
@@ -103,6 +127,30 @@ def train_from_npz(
         y_train = data["y_train"]
         X_test = data["X_test"] if "X_test" in data else None
         y_test = data["y_test"] if "y_test" in data else None
+        input_feature_names = feature_names or (
+            DEFAULT_FEATURE_NAMES if X_train.shape[1] == len(DEFAULT_FEATURE_NAMES) else [f"feature_{i}" for i in range(X_train.shape[1])]
+        )
+        scaler = existing_scaler or StandardScaler()
+        if existing_scaler is None:
+            X_train = scaler.fit_transform(X_train)
+            if X_test is not None and y_test is not None and len(X_test) and len(y_test):
+                X_test = scaler.transform(X_test)
+        save_scaler_artifact(model_type, scaler)
+        metadata_payload = {
+            "input_features": input_feature_names,
+            "scaler": scaler.__class__.__name__,
+            "model_type": model_type,
+            "job_id": job_id,
+            "dataset_version": config.get("dataset_version", "unknown"),
+            "training_mode": config.get("validation_mode", "split"),
+            "source": config.get("source", "training_job"),
+        }
+        if dataset_metadata:
+            metadata_payload["dataset_metadata"] = _json_safe(dataset_metadata)
+        metadata_path = save_model_metadata(model_type, metadata_payload)
+        artifacts["scaler_local_path"] = get_model_artifact_paths(model_type)["scaler_path"]
+        artifacts["metadata_local_path"] = metadata_path
+        artifacts["model_local_path"] = get_model_artifact_paths(model_type)["model_path"]
 
         monitor.log_training_event(
             job_id,
@@ -153,17 +201,26 @@ def train_from_npz(
         _publish(job_id, "saving_artifacts", {"progress": 0.9})
         os.makedirs("processed", exist_ok=True)
         model.save(temp_model_path)
-        artifacts["model_local_path"] = temp_model_path
+        artifacts["model_upload_temp_path"] = temp_model_path
 
         if storage_service.enabled:
             try:
                 _set_meta(0.95, "Uploading model to object storage...")
                 _update_run(job_id, "uploading_artifacts", 0.95, "Uploading model artifact...", artifacts=artifacts)
                 _publish(job_id, "uploading_artifacts", {"progress": 0.95})
-                object_name = storage_service.upload_file(temp_model_path, "models", f"{job_id}/model.h5")
-                if object_name:
-                    artifacts["model_object_name"] = object_name
-                    artifacts["model_url"] = storage_service.get_file_url("models", f"{job_id}/model.h5")
+                model_paths = get_model_artifact_paths(model_type)
+                model_object_name = storage_service.upload_file(model_paths["model_path"], "models", f"{job_id}/model.keras")
+                scaler_object_name = storage_service.upload_file(model_paths["scaler_path"], "models", f"{job_id}/scaler.joblib")
+                metadata_object_name = storage_service.upload_file(model_paths["metadata_path"], "models", f"{job_id}/metadata.json")
+                if model_object_name:
+                    artifacts["model_object_name"] = model_object_name
+                    artifacts["model_url"] = storage_service.get_file_url("models", f"{job_id}/model.keras")
+                if scaler_object_name:
+                    artifacts["scaler_object_name"] = scaler_object_name
+                    artifacts["scaler_url"] = storage_service.get_file_url("models", f"{job_id}/scaler.joblib")
+                if metadata_object_name:
+                    artifacts["metadata_object_name"] = metadata_object_name
+                    artifacts["metadata_url"] = storage_service.get_file_url("models", f"{job_id}/metadata.json")
             except Exception as exc:
                 logger.warning(f"MinIO upload failed: {exc}")
 
@@ -265,7 +322,7 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
         df = load_data(file_path)
         df = label_eeg_states(df)
 
-        X_train, X_test, y_train, y_test, _metadata = preprocess_data(
+        X_train, X_test, y_train, y_test, preprocessing_metadata = preprocess_data(
             df,
             overlap=config.get("overlap", 0.5),
             simple_mode=config.get("simple_mode", True),
@@ -273,7 +330,15 @@ def train_from_file(file_path: str, config: Dict[str, Any], model_type: str) -> 
         np.savez_compressed(npz_path, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test)
         artifacts["training_bundle_local_path"] = npz_path
         update_training_run(job_id, {"artifacts": artifacts})
-        return train_from_npz(npz_path, config, model_type, existing_artifacts=artifacts)
+        return train_from_npz(
+            npz_path,
+            config,
+            model_type,
+            existing_artifacts=artifacts,
+            existing_scaler=preprocessing_metadata.get("scaler"),
+            feature_names=preprocessing_metadata.get("feature_names"),
+            dataset_metadata=preprocessing_metadata,
+        )
     finally:
         _cleanup_file(npz_path)
         _cleanup_file(file_path)

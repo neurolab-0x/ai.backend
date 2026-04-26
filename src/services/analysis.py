@@ -8,10 +8,8 @@ import os
 from src.preprocessing import (
     load_data,
     extract_features,
-    preprocess_data
 )
 from src.preprocessing.labeling import label_eeg_states
-from src.core.ml.model import load_calibrated_model
 from src.core.processing.temporal import temporal_smoothing, calculate_state_durations
 from src.services.recommendation import NLPRecommendationEngine
 from src.services.database import db_service
@@ -28,13 +26,23 @@ class MLProcessor:
     Handles model loading, data preprocessing, predictions, and recommendations.
     """
     
-    def __init__(self, default_model: Optional[str] = None):
+    def __init__(self, default_model: Optional[str] = None, model_path: Optional[str] = None):
         """
         Initialize ML Processor.
         
         Args:
             default_model: Name of the default architecture (optional)
         """
+        if model_path and not default_model:
+            candidate = os.path.basename(str(model_path))
+            if candidate.endswith(".h5"):
+                candidate = candidate[:-3]
+            elif candidate.endswith(".keras"):
+                candidate = candidate[:-6]
+            try:
+                default_model = sanitize_model_type(candidate)
+            except ValueError:
+                logger.warning(f"Ignoring unsupported model_path override: {model_path}")
         self.default_model = default_model
         self.recommendation_engine = NLPRecommendationEngine()
         self.model_manager = get_model_manager()
@@ -75,7 +83,12 @@ class MLProcessor:
             logger.info(f"Processing EEG data for subject {subject_id}, session {session_id} using model {model_type}")
             
             # Step 1: Load and preprocess data
-            processed_features = self._preprocess_input(data, overlap=overlap, simple_mode=simple_mode)
+            processed_features = self._preprocess_input(
+                data,
+                model_type=model_type,
+                overlap=overlap,
+                simple_mode=simple_mode,
+            )
             
             # Step 2: Make predictions using the specified model
             model = self.model_manager.get_model(model_type, warmup=False)
@@ -168,7 +181,13 @@ class MLProcessor:
             logger.error(f"Error processing EEG data: {str(e)}", exc_info=True)
             raise
 
-    def _preprocess_input(self, data: Union[str, Dict, np.ndarray, pd.DataFrame], overlap: float = 0.0, simple_mode: bool = True) -> np.ndarray:
+    def _preprocess_input(
+        self,
+        data: Union[str, Dict, np.ndarray, pd.DataFrame],
+        model_type: str,
+        overlap: float = 0.0,
+        simple_mode: bool = True,
+    ) -> np.ndarray:
         """
         Preprocess input data into the format expected by the model.
         
@@ -179,13 +198,30 @@ class MLProcessor:
             Preprocessed numpy array of shape (n_samples, 5)
         """
         try:
+            scaler = self.model_manager.get_scaler(model_type)
+            metadata = self.model_manager.get_metadata(model_type)
+            if scaler is None or metadata is None:
+                raise RuntimeError(
+                    f"Model artifacts incomplete for model_type={model_type}. "
+                    "Expected model, scaler, and metadata artifacts."
+                )
+            expected_features = metadata.get("input_features") or ['alpha', 'beta', 'theta', 'delta', 'gamma']
+            if not isinstance(expected_features, list) or not expected_features:
+                raise RuntimeError(f"Invalid metadata for model_type={model_type}: missing input_features")
+
             # Handle file path
             if isinstance(data, str):
                 logger.debug(f"Loading data from file: {data}")
                 raw_data = load_data(data)
-                # Pass raw data directly to preprocess_data
-                X_normalized, _, _, _, _ = preprocess_data(raw_data, overlap=overlap, simple_mode=simple_mode)
-                return X_normalized
+                if not isinstance(raw_data, pd.DataFrame):
+                    raise ValueError("Loaded EEG input must be a pandas DataFrame")
+                feature_df = extract_features(raw_data, simple_mode=simple_mode, overlap=overlap)
+                if not isinstance(feature_df, pd.DataFrame):
+                    raise ValueError("Feature extraction did not return a DataFrame")
+                missing_cols = [col for col in expected_features if col not in feature_df.columns]
+                if missing_cols:
+                    raise ValueError(f"Extracted features missing expected columns: {missing_cols}")
+                return self._normalize_features(feature_df[expected_features].values, scaler=scaler)
             
             # Handle dictionary (single sample or batch)
             elif isinstance(data, dict):
@@ -208,23 +244,27 @@ class MLProcessor:
                     ])
                 
                 # Normalize
-                return self._normalize_features(features_array)
+                if len(expected_features) != features_array.shape[1]:
+                    raise ValueError(
+                        f"Model {model_type} expects {len(expected_features)} features {expected_features}, "
+                        f"but dictionary input provides {features_array.shape[1]}"
+                    )
+                return self._normalize_features(features_array, scaler=scaler)
             
             # Handle numpy array
             elif isinstance(data, np.ndarray):
                 logger.debug(f"Processing numpy array of shape {data.shape}")
-                if data.shape[-1] != 5:
-                    raise ValueError(f"Expected 5 features (alpha, beta, theta, delta, gamma), got {data.shape[-1]}")
-                return self._normalize_features(data)
+                if data.shape[-1] != len(expected_features):
+                    raise ValueError(f"Expected {len(expected_features)} features {expected_features}, got {data.shape[-1]}")
+                return self._normalize_features(data, scaler=scaler)
             
             # Handle pandas DataFrame
             elif isinstance(data, pd.DataFrame):
                 logger.debug("Processing DataFrame input")
-                required_cols = ['alpha', 'beta', 'theta', 'delta', 'gamma']
-                if not all(col in data.columns for col in required_cols):
-                    raise ValueError(f"DataFrame must contain columns: {required_cols}")
-                features_array = data[required_cols].values
-                return self._normalize_features(features_array)
+                if not all(col in data.columns for col in expected_features):
+                    raise ValueError(f"DataFrame must contain columns: {expected_features}")
+                features_array = data[expected_features].values
+                return self._normalize_features(features_array, scaler=scaler)
             
             else:
                 raise ValueError(f"Unsupported data type: {type(data)}")
@@ -233,9 +273,9 @@ class MLProcessor:
             logger.error(f"Error preprocessing input: {str(e)}")
             raise
     
-    def _normalize_features(self, features: np.ndarray) -> np.ndarray:
+    def _normalize_features(self, features: np.ndarray, scaler) -> np.ndarray:
         """
-        Normalize features using z-score normalization.
+        Normalize features using the scaler fitted during training.
         
         Args:
             features: Raw feature array
@@ -243,10 +283,9 @@ class MLProcessor:
         Returns:
             Normalized feature array
         """
-        mean = np.mean(features, axis=0)
-        std = np.std(features, axis=0)
-        normalized = (features - mean) / (std + 1e-10)
-        return normalized
+        if scaler is None:
+            raise RuntimeError("Scaler artifact is required for inference")
+        return scaler.transform(features)
 
     def _make_predictions(self, features: np.ndarray, model=None) -> Dict[str, Any]:
         """
@@ -261,8 +300,7 @@ class MLProcessor:
         """
         try:
             if model is None:
-                logger.warning("No model provided, using rule-based classification")
-                return self._rule_based_classification(features)
+                raise RuntimeError("No model provided for inference")
             
             # Reshape for model input (n_samples, 5, 1)
             features_reshaped = features.reshape(-1, 5, 1)
@@ -289,8 +327,7 @@ class MLProcessor:
             
         except Exception as e:
             logger.error(f"Error making predictions: {str(e)}")
-            # Fallback to rule-based classification
-            return self._rule_based_classification(features)
+            raise RuntimeError("Model inference failed") from e
     
     def _rule_based_classification(self, features: np.ndarray) -> Dict[str, Any]:
         """
@@ -418,10 +455,21 @@ class MLProcessor:
             model_path: Optional new model path. If None, uses existing path.
         """
         if model_path:
-            self.model_path = model_path
-        
-        logger.info(f"Reloading model from {self.model_path}")
-        self._load_model()
+            candidate = os.path.basename(str(model_path))
+            if candidate.endswith(".h5"):
+                candidate = candidate[:-3]
+            elif candidate.endswith(".keras"):
+                candidate = candidate[:-6]
+            self.default_model = sanitize_model_type(candidate)
+
+        if not self.default_model:
+            raise ValueError("default_model must be set before reloading")
+
+        logger.info(f"Reloading model artifacts for {self.default_model}")
+        self.model_manager.models.pop(self.default_model, None)
+        self.model_manager.scalers.pop(self.default_model, None)
+        self.model_manager.metadata.pop(self.default_model, None)
+        self.model_manager.get_model(self.default_model, warmup=True)
     
     async def generate_detailed_report(
         self,
