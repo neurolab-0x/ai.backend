@@ -14,7 +14,7 @@ from src.utils.files import validate_file, save_uploaded_file
 from src.core.ml.model_types import sanitize_model_type
 from src.services.chat import generate_conversation_title
 from src.queue import get_async_redis, publish_job_event, read_job_state
-from src.utils.validation import require_safe_id_or_400, validate_optional_safe_id
+from src.utils.validation import require_safe_id_or_400, validate_optional_safe_id, validate_safe_id
 
 try:
     from rq.job import Job
@@ -123,10 +123,12 @@ async def process_uploaded_file(
                 simple_mode=simple_mode
             )
         elif json_data:
+            subject_id = validate_safe_id(str(json_data.get('subject_id', 'anonymous')), "subject_id")
+            session_id = validate_safe_id(str(json_data.get('session_id', 'session_1')), "session_id")
             result = await ml_processor.process_eeg_data(
                 json_data, 
-                "anonymous", 
-                "session_1", 
+                subject_id,
+                session_id,
                 model_type=model_type,
                 overlap=overlap,
                 simple_mode=simple_mode
@@ -160,8 +162,8 @@ async def analyze_eeg_data(
             raise HTTPException(status_code=400, detail=str(ve))
         result = await ml_processor.process_eeg_data(
             data,
-            subject_id=data.get('subject_id', 'anonymous'),
-            session_id=data.get('session_id', 'session_1'),
+            subject_id=validate_safe_id(str(data.get('subject_id', 'anonymous')), "subject_id"),
+            session_id=validate_safe_id(str(data.get('session_id', 'session_1')), "session_id"),
             model_type=model_type,
             overlap=overlap,
             simple_mode=simple_mode
@@ -190,14 +192,16 @@ async def generate_detailed_report(
             raise HTTPException(status_code=400, detail=str(ve))
         report = await ml_processor.generate_detailed_report(
             data,
-            subject_id=data.get('subject_id', 'anonymous'),
-            session_id=data.get('session_id', 'session_1'),
+            subject_id=validate_safe_id(str(data.get('subject_id', 'anonymous')), "subject_id"),
+            session_id=validate_safe_id(str(data.get('session_id', 'session_1')), "session_id"),
             save_report=save_report,
             model_type=model_type,
             overlap=overlap,
             simple_mode=simple_mode
         )
         return report
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:

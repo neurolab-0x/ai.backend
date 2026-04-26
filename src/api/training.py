@@ -40,6 +40,7 @@ from src.jobs.training_persistence import (
     get_training_run as load_training_run,
     list_training_runs as load_training_runs,
 )
+from src.utils.validation import require_safe_id_or_400, validate_optional_safe_id
 
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,15 @@ def _serialize_dt(value: Any) -> Optional[str]:
     return str(value)
 
 
+def _sanitize_training_config_ids(config: Optional[TrainingConfig]) -> Optional[TrainingConfig]:
+    if config is None:
+        return None
+    payload = config.dict()
+    payload["subject_id"] = validate_optional_safe_id(payload.get("subject_id"), "subject_id")
+    payload["session_id"] = validate_optional_safe_id(payload.get("session_id"), "session_id")
+    return TrainingConfig(**payload)
+
+
 def _build_training_status(job: Optional[Job], persisted_run: Optional[Dict[str, Any]]) -> TrainingStatus:
     state = persisted_run or {}
     rq_status = job.get_status() if job is not None else None
@@ -216,6 +226,7 @@ async def train_model(
             config_payload = data.config.dict()
             config_payload["model_type"] = model_type
             data.config = TrainingConfig(**config_payload)
+        data.config = _sanitize_training_config_ids(data.config)
 
         job_id = f"train_{uuid4().hex}"
         # Persist arrays to disk to avoid pickling huge payloads into Redis.
@@ -322,6 +333,7 @@ async def train_model_from_file(
                 overlap=overlap,
                 simple_mode=simple_mode
             )
+        training_config = _sanitize_training_config_ids(training_config)
 
         job_id = f"train_file_{uuid4().hex}"
         run_record = {
@@ -390,6 +402,7 @@ async def get_training_status(
     """
     Get the status of a training job.
     """
+    job_id = require_safe_id_or_400(job_id, "job_id")
     persisted_run = load_training_run(job_id)
     job = None
     if RQ_AVAILABLE:
@@ -440,6 +453,7 @@ async def delete_training_job(
     """
     Delete a training job record (Admin only).
     """
+    job_id = require_safe_id_or_400(job_id, "job_id")
     job = None
     if RQ_AVAILABLE:
         try:
@@ -474,6 +488,7 @@ async def compare_models(
         y_train = np.array(data.y_train)
         X_test = np.array(data.X_test) if data.X_test else None
         y_test = np.array(data.y_test) if data.y_test else None
+        data.config = _sanitize_training_config_ids(data.config)
         
         if X_test is None or y_test is None:
             raise HTTPException(
@@ -544,6 +559,7 @@ async def compare_models(
 @router.get("/runs/{job_id}", response_model=TrainingRunDetail)
 async def get_training_run_detail(job_id: str):
     """Return the canonical persisted training run view by job id."""
+    job_id = require_safe_id_or_400(job_id, "job_id")
     persisted_run = load_training_run(job_id)
     if persisted_run is None:
         raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
@@ -575,6 +591,7 @@ async def get_training_history(limit: int = 20):
 @router.get("/runs/{job_id}/artifacts")
 async def get_training_run_artifacts(job_id: str):
     """Return persisted artifact metadata for a training run."""
+    job_id = require_safe_id_or_400(job_id, "job_id")
     run = load_training_run(job_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Training run {job_id} not found")
@@ -587,6 +604,7 @@ async def get_training_run_artifacts(job_id: str):
 @router.get("/sse")
 async def stream_training_events(job_id: str):
     """Server-Sent Events stream for training job events."""
+    job_id = require_safe_id_or_400(job_id, "job_id")
     if get_async_redis is None:
         raise HTTPException(status_code=503, detail="Training event stream is unavailable")
 
