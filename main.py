@@ -31,7 +31,21 @@ except ImportError:
 async def lifespan(app: FastAPI):
     """Lifespan management for the application"""
     logger.info("Application starting up")
+    grpc_server = None
+    try:
+        from src.grpc.chat_server import create_chat_grpc_server
+
+        grpc_server = await create_chat_grpc_server()
+        await grpc_server.start()
+        logger.info("AI chat gRPC server started")
+    except ImportError as exc:
+        logger.warning(f"Chat gRPC server unavailable: {exc}")
+    except Exception as exc:
+        logger.warning(f"Failed to start chat gRPC server: {exc}")
+
     yield
+    if grpc_server is not None:
+        await grpc_server.stop(grace=5)
     logger.info("Application shutdown initiated")
 
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1").rstrip("/")
