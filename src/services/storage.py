@@ -1,6 +1,8 @@
 import logging
 import os
+from copy import deepcopy
 from datetime import timedelta
+from typing import Any, Dict, Optional
 from minio import Minio
 from minio.error import S3Error
 from src.config.database import MINIO_CONFIG, ENABLE_DATABASES
@@ -95,3 +97,43 @@ class MinioStorageService:
         except Exception as e:
             logger.error(f"Error generating URL: {e}")
             return None
+
+    def build_artifact_descriptor(
+        self,
+        bucket_key: str,
+        object_name: str,
+        *,
+        label: Optional[str] = None,
+        kind: Optional[str] = None,
+        content_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        descriptor: Dict[str, Any] = {
+            "bucket_key": bucket_key,
+            "bucket_name": MINIO_CONFIG["buckets"].get(bucket_key),
+            "object_name": object_name,
+        }
+        if label:
+            descriptor["label"] = label
+        if kind:
+            descriptor["kind"] = kind
+        if content_type:
+            descriptor["content_type"] = content_type
+        if metadata:
+            descriptor["metadata"] = metadata
+        return descriptor
+
+    def hydrate_artifact_urls(self, value: Any, expiry_hours: int = 24) -> Any:
+        """Attach fresh signed URLs to nested artifact descriptors."""
+        if isinstance(value, dict):
+            hydrated = {key: self.hydrate_artifact_urls(val, expiry_hours=expiry_hours) for key, val in value.items()}
+            if "bucket_key" in hydrated and "object_name" in hydrated:
+                hydrated["signed_url"] = self.get_file_url(
+                    hydrated["bucket_key"],
+                    hydrated["object_name"],
+                    expiry_hours=expiry_hours,
+                )
+            return hydrated
+        if isinstance(value, list):
+            return [self.hydrate_artifact_urls(item, expiry_hours=expiry_hours) for item in value]
+        return deepcopy(value) if isinstance(value, (tuple, set)) else value

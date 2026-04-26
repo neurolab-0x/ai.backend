@@ -31,6 +31,9 @@ class ModelManager:
         self.models: Dict[str, object] = {}
         self.scalers: Dict[str, object] = {}
         self.metadata: Dict[str, Dict[str, object]] = {}
+        self.model_mtimes: Dict[str, float] = {}
+        self.scaler_mtimes: Dict[str, float] = {}
+        self.metadata_mtimes: Dict[str, float] = {}
         self.tensorflow_available = False
         self._lock = Lock()
         self._initialize_tensorflow()
@@ -48,6 +51,12 @@ class ModelManager:
     def _model_path(self, model_type: str) -> str:
         model_type = sanitize_model_type(model_type)
         return get_model_artifact_paths(model_type, base_dir=self.model_dir)["model_path"]
+
+    def _artifact_mtime(self, path: str) -> Optional[float]:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return None
 
     def list_model_files(self) -> List[str]:
         """List model filenames present on disk."""
@@ -74,10 +83,12 @@ class ModelManager:
 
         model_type = sanitize_model_type(model_type)
         with self._lock:
-            if model_type in self.models:
+            model_path = self._model_path(model_type)
+            current_mtime = self._artifact_mtime(model_path)
+            cached_mtime = self.model_mtimes.get(model_type)
+            if model_type in self.models and current_mtime == cached_mtime:
                 return self.models[model_type]
 
-            model_path = self._model_path(model_type)
             logger.info(f"Loading model '{model_type}' from {model_path}")
             model = load_calibrated_model(model_type)
             if model is None:
@@ -92,12 +103,16 @@ class ModelManager:
                     logger.warning(f"Model '{model_type}' warmup failed: {e}")
 
             self.models[model_type] = model
+            self.model_mtimes[model_type] = current_mtime or -1.0
             return model
 
     def get_scaler(self, model_type: str):
         model_type = sanitize_model_type(model_type)
         with self._lock:
-            if model_type in self.scalers:
+            scaler_path = get_model_artifact_paths(model_type, base_dir=self.model_dir)["scaler_path"]
+            current_mtime = self._artifact_mtime(scaler_path)
+            cached_mtime = self.scaler_mtimes.get(model_type)
+            if model_type in self.scalers and current_mtime == cached_mtime:
                 return self.scalers[model_type]
 
             scaler = load_scaler_artifact(model_type, base_dir=self.model_dir)
@@ -105,12 +120,16 @@ class ModelManager:
                 logger.error(f"Scaler artifact missing for model '{model_type}'")
                 return None
             self.scalers[model_type] = scaler
+            self.scaler_mtimes[model_type] = current_mtime or -1.0
             return scaler
 
     def get_metadata(self, model_type: str) -> Optional[Dict[str, object]]:
         model_type = sanitize_model_type(model_type)
         with self._lock:
-            if model_type in self.metadata:
+            metadata_path = get_model_artifact_paths(model_type, base_dir=self.model_dir)["metadata_path"]
+            current_mtime = self._artifact_mtime(metadata_path)
+            cached_mtime = self.metadata_mtimes.get(model_type)
+            if model_type in self.metadata and current_mtime == cached_mtime:
                 return self.metadata[model_type]
 
             metadata = load_model_metadata(model_type, base_dir=self.model_dir)
@@ -118,6 +137,7 @@ class ModelManager:
                 logger.error(f"Metadata artifact missing for model '{model_type}'")
                 return None
             self.metadata[model_type] = metadata
+            self.metadata_mtimes[model_type] = current_mtime or -1.0
             return metadata
 
     def warmup_all(self) -> None:

@@ -261,10 +261,14 @@ class DatabaseService:
             return None
 
         try:
+            run_data = dict(run_data)
+            run_data["job_id"] = validate_safe_id(run_data["job_id"], "job_id")
             if "created_at" not in run_data:
                 run_data["created_at"] = datetime.now()
             if "updated_at" not in run_data:
                 run_data["updated_at"] = run_data["created_at"]
+            run_data.setdefault("archived", False)
+            run_data.setdefault("archived_at", None)
             result = await self.db.training_runs.insert_one(run_data)
             return str(result.inserted_id)
         except Exception as e:
@@ -277,6 +281,7 @@ class DatabaseService:
             return False
 
         try:
+            job_id = validate_safe_id(job_id, "job_id")
             updates = dict(updates)
             updates["updated_at"] = datetime.now()
             result = await self.db.training_runs.update_one(
@@ -295,6 +300,7 @@ class DatabaseService:
             return None
 
         try:
+            job_id = validate_safe_id(job_id, "job_id")
             doc = await self.db.training_runs.find_one({"job_id": job_id})
             if not doc:
                 return None
@@ -304,14 +310,17 @@ class DatabaseService:
             logger.error(f"Error fetching training run {job_id}: {e}")
             return None
 
-    async def list_training_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+    async def list_training_runs(self, limit: int = 20, include_archived: bool = False) -> List[Dict[str, Any]]:
         """List persisted training runs newest first."""
         if not self.enabled or self.db is None:
             return []
 
         runs: List[Dict[str, Any]] = []
         try:
-            cursor = self.db.training_runs.find({}).sort("created_at", -1).limit(limit)
+            query: Dict[str, Any] = {}
+            if not include_archived:
+                query["archived"] = {"$ne": True}
+            cursor = self.db.training_runs.find(query).sort("created_at", -1).limit(limit)
             async for doc in cursor:
                 doc["_id"] = str(doc["_id"])
                 runs.append(doc)
@@ -320,16 +329,29 @@ class DatabaseService:
             logger.error(f"Error listing training runs: {e}")
             return []
 
-    async def delete_training_run(self, job_id: str) -> bool:
-        """Delete a persisted training run by job_id."""
+    async def archive_training_run(self, job_id: str, reason: str = "archived_by_user") -> bool:
+        """Archive a persisted training run by job_id."""
         if not self.enabled or self.db is None:
             return False
 
         try:
-            result = await self.db.training_runs.delete_one({"job_id": job_id})
-            return result.deleted_count > 0
+            job_id = validate_safe_id(job_id, "job_id")
+            result = await self.db.training_runs.update_one(
+                {"job_id": job_id},
+                {
+                    "$set": {
+                        "archived": True,
+                        "archived_at": datetime.now(),
+                        "archival_reason": reason,
+                        "status": "archived",
+                        "updated_at": datetime.now(),
+                    }
+                },
+                upsert=False,
+            )
+            return result.matched_count > 0
         except Exception as e:
-            logger.error(f"Error deleting training run {job_id}: {e}")
+            logger.error(f"Error archiving training run {job_id}: {e}")
             return False
             
     async def close(self):
