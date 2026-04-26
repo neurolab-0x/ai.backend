@@ -3,6 +3,7 @@ from typing import Dict, Any
 import logging
 import os
 from src.core.ml.model_types import sanitize_model_type
+from src.core.ml.model import get_model_artifact_paths
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -57,16 +58,23 @@ async def calibrate_model_endpoint(
         
         # Determine which models to calibrate
         if model_name == 'all':
-            model_files = [f for f in os.listdir('model') if f.endswith('.h5')]
-            model_names = [f.replace('.h5', '') for f in model_files]
+            model_names = []
+            if os.path.exists("model"):
+                for entry in os.listdir("model"):
+                    entry_path = os.path.join("model", entry)
+                    if os.path.isdir(entry_path) and os.path.exists(os.path.join(entry_path, "model.keras")):
+                        model_names.append(entry)
+                    elif entry.endswith(".h5"):
+                        model_names.append(entry.replace(".h5", ""))
         else:
             model_names = [model_name]
         
         results = {}
         for name in model_names:
-            model_path = f"model/{name}.h5"
+            paths = get_model_artifact_paths(name)
+            model_path = paths["model_path"] if os.path.exists(paths["model_path"]) else paths["legacy_model_path"]
             if not os.path.exists(model_path):
-                results[name] = {"status": "error", "message": f"Model file not found: {model_path}"}
+                results[name] = {"status": "error", "message": f"Model file not found for model '{name}'"}
                 continue
             
             try:
@@ -83,7 +91,8 @@ async def calibrate_model_endpoint(
                 calibrated_model = calibrate_model(model, X_cal, y_cal)
                 
                 # Save calibrated model
-                calibrated_path = f"model/{name}_calibrated.h5"
+                calibrated_path = os.path.join(paths["artifact_dir"], "model_calibrated.keras")
+                os.makedirs(paths["artifact_dir"], exist_ok=True)
                 calibrated_model.save(calibrated_path)
                 
                 results[name] = {

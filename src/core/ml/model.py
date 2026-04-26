@@ -6,9 +6,13 @@ import numpy as np
 import math
 import time
 import os
+import json
 import logging
 from datetime import datetime
 from typing import Tuple, Optional, Dict, List, Any
+from pathlib import Path
+
+import joblib
 from src.core.ml.model_types import sanitize_model_type
 
 try:
@@ -41,6 +45,63 @@ except ImportError:
 
 # Configure logging
 logger = logging.getLogger(__name__)
+DEFAULT_FEATURE_NAMES = ["alpha", "beta", "theta", "delta", "gamma"]
+
+
+def get_model_artifact_dir(model_type: str, base_dir: str = "model") -> str:
+    return os.path.join(base_dir, model_type)
+
+
+def get_model_artifact_paths(model_type: str, base_dir: str = "model") -> Dict[str, str]:
+    artifact_dir = get_model_artifact_dir(model_type, base_dir=base_dir)
+    return {
+        "artifact_dir": artifact_dir,
+        "model_path": os.path.join(artifact_dir, "model.keras"),
+        "scaler_path": os.path.join(artifact_dir, "scaler.joblib"),
+        "metadata_path": os.path.join(artifact_dir, "metadata.json"),
+        "legacy_model_path": os.path.join(base_dir, f"{model_type}.h5"),
+    }
+
+
+def save_model_metadata(model_type: str, metadata: Dict[str, Any], base_dir: str = "model") -> str:
+    paths = get_model_artifact_paths(model_type, base_dir=base_dir)
+    os.makedirs(paths["artifact_dir"], exist_ok=True)
+    payload = dict(metadata)
+    payload.setdefault("model_type", model_type)
+    payload.setdefault("trained_at", datetime.now().date().isoformat())
+    with open(paths["metadata_path"], "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    return paths["metadata_path"]
+
+
+def save_scaler_artifact(model_type: str, scaler: Any, base_dir: str = "model") -> str:
+    paths = get_model_artifact_paths(model_type, base_dir=base_dir)
+    os.makedirs(paths["artifact_dir"], exist_ok=True)
+    joblib.dump(scaler, paths["scaler_path"])
+    return paths["scaler_path"]
+
+
+def load_model_metadata(model_type: str, base_dir: str = "model") -> Optional[Dict[str, Any]]:
+    paths = get_model_artifact_paths(model_type, base_dir=base_dir)
+    if not os.path.exists(paths["metadata_path"]):
+        return None
+    try:
+        with open(paths["metadata_path"], "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading metadata for {model_type}: {str(e)}")
+        return None
+
+
+def load_scaler_artifact(model_type: str, base_dir: str = "model") -> Any:
+    paths = get_model_artifact_paths(model_type, base_dir=base_dir)
+    if not os.path.exists(paths["scaler_path"]):
+        return None
+    try:
+        return joblib.load(paths["scaler_path"])
+    except Exception as e:
+        logger.error(f"Error loading scaler for {model_type}: {str(e)}")
+        return None
 
 
 def _require_tensorflow():
@@ -232,13 +293,17 @@ def train_hybrid_model(X_train, y_train, model_type='enhanced_cnn_lstm', **kwarg
     input_shape = (X_train.shape[1], 1)
     num_classes = len(np.unique(y_train))
     
-    model_path = os.path.join("model", f"{model_type}.h5")
+    artifact_paths = get_model_artifact_paths(model_type)
+    model_path = artifact_paths["model_path"]
+    legacy_model_path = artifact_paths["legacy_model_path"]
+    os.makedirs(artifact_paths["artifact_dir"], exist_ok=True)
     
     # Try to load existing model for continuous training
-    if os.path.exists(model_path):
+    existing_model_path = model_path if os.path.exists(model_path) else legacy_model_path if os.path.exists(legacy_model_path) else None
+    if existing_model_path:
         logger.info(f"Loading existing {model_type} model for continuous training...")
         try:
-            model = tf.keras.models.load_model(model_path)
+            model = tf.keras.models.load_model(existing_model_path)
             model.compile(optimizer=Adam(learning_rate=kwargs.get('learning_rate', 0.001)), 
                          loss='sparse_categorical_crossentropy', 
                          metrics=['accuracy'])
@@ -283,7 +348,7 @@ def save_model(model, model_path: str) -> None:
         raise
 
 def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
-    """Load a trained model, fallback to a base model if not found."""
+    """Load a trained model from the artifact directory or legacy flat file."""
     try:
         if not TF_AVAILABLE:
             logger.warning("TensorFlow is not installed; calibrated models are unavailable")
@@ -294,20 +359,29 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
 
         # Treat input as a model identifier/basename, never as a full path.
         model_name = os.path.basename(str(model_path))
-        if model_name.endswith('.h5'):
+        if model_name.endswith('.keras'):
+            model_name = model_name[:-6]
+        elif model_name.endswith('.h5'):
             model_name = model_name[:-3]
         model_name = sanitize_model_type(model_name)
 
-        normalized_model_path = os.path.join(base_dir, f"{model_name}.h5")
-        normalized_model_path_real = os.path.realpath(normalized_model_path)
-        if os.path.commonpath([base_dir_real, normalized_model_path_real]) != base_dir_real:
-            raise ValueError("Resolved model path escapes the allowed model directory")
+        paths = get_model_artifact_paths(model_name)
+        candidate_paths = [paths["model_path"], paths["legacy_model_path"]]
+        resolved_model_path = None
+        for candidate in candidate_paths:
+            candidate_real = os.path.realpath(candidate)
+            if os.path.commonpath([base_dir_real, candidate_real]) != base_dir_real:
+                raise ValueError("Resolved model path escapes the allowed model directory")
+            if os.path.exists(candidate_real):
+                resolved_model_path = candidate_real
+                break
 
-        if not os.path.exists(normalized_model_path_real):
-            logger.warning(f"Model file not found at {normalized_model_path_real}. Creating base model.")
-            return build_model(model_name)
-        model = tf.keras.models.load_model(normalized_model_path_real)
-        logger.info(f"Model loaded successfully from {normalized_model_path_real}")
+        if resolved_model_path is None:
+            logger.warning(f"Model artifact not found for {model_name}")
+            return None
+
+        model = tf.keras.models.load_model(resolved_model_path)
+        logger.info(f"Model loaded successfully from {resolved_model_path}")
         return model
     except Exception as e:
         logger.error(f"Error loading model from {model_path}: {str(e)}")
