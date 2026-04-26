@@ -290,6 +290,7 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
             return None
 
         base_dir = os.path.abspath("model")
+        base_dir_real = os.path.realpath(base_dir)
 
         # Treat input as a model identifier/basename, never as a full path.
         model_name = os.path.basename(str(model_path))
@@ -298,12 +299,15 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
         model_name = sanitize_model_type(model_name)
 
         normalized_model_path = os.path.join(base_dir, f"{model_name}.h5")
+        normalized_model_path_real = os.path.realpath(normalized_model_path)
+        if os.path.commonpath([base_dir_real, normalized_model_path_real]) != base_dir_real:
+            raise ValueError("Resolved model path escapes the allowed model directory")
 
-        if not os.path.exists(normalized_model_path):
-            logger.warning(f"Model file not found at {normalized_model_path}. Creating base model.")
+        if not os.path.exists(normalized_model_path_real):
+            logger.warning(f"Model file not found at {normalized_model_path_real}. Creating base model.")
             return build_model(model_name)
-        model = tf.keras.models.load_model(normalized_model_path)
-        logger.info(f"Model loaded successfully from {normalized_model_path}")
+        model = tf.keras.models.load_model(normalized_model_path_real)
+        logger.info(f"Model loaded successfully from {normalized_model_path_real}")
         return model
     except Exception as e:
         logger.error(f"Error loading model from {model_path}: {str(e)}")
