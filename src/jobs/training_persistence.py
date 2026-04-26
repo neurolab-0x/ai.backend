@@ -31,5 +31,5 @@ def list_training_runs(limit: int = 20) -> List[Dict[str, Any]]:
     return _run(db_service.list_training_runs(limit=limit))
 
 
-def delete_training_run(job_id: str) -> bool:
-    return _run(db_service.delete_training_run(job_id))
+def archive_training_run(job_id: str, reason: str = "archived_by_worker") -> bool:
+    return _run(db_service.archive_training_run(job_id, reason=reason))
