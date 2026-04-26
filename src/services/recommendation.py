@@ -223,7 +223,7 @@ Format as JSON:
             return explanation
         except Exception as e:
             logger.error(f"Failed to generate medical explanation: {e}")
-            return {{"error": str(e)}}
+            return {"error": str(e)}
 
     async def generate_detailed_report(
         self,
