@@ -140,6 +140,8 @@ async def process_uploaded_file(
             result = base64.b64encode(str(result).encode()).decode()
             
         return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
@@ -169,6 +171,8 @@ async def analyze_eeg_data(
             simple_mode=simple_mode
         )
         return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:

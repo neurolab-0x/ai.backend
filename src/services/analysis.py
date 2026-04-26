@@ -396,9 +396,9 @@ class MLProcessor:
             State label string
         """
         labels = {
-            0: "relaxed",
-            1: "focused",
-            2: "stressed"
+            0: "calm",
+            1: "engaged",
+            2: "elevated_stress"
         }
         return labels.get(state, "unknown")
     

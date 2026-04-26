@@ -46,7 +46,7 @@ async def root():
         "description": "API for EEG signal processing and mental state classification with NLP-based recommendations",
         "features": [
             "Real-time EEG analysis",
-            "Mental state classification (relaxed, focused, stressed)",
+            "Mental state classification (calm, engaged, elevated stress)",
             "NLP-based personalized recommendations",
             "Cognitive metrics calculation",
             "Wellness scoring",
