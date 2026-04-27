@@ -179,39 +179,6 @@ async def analyze_eeg_data(
         logger.error(f"Error analyzing data: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post('/detailed-report', summary="Generate detailed analysis report", response_description="Comprehensive report with recommendations")
-async def generate_detailed_report(
-    data: Dict[str, Any] = Body(..., description="EEG data to analyze"),
-    save_report: bool = Query(False, description="Whether to save the report to a file"),
-    model_type: str = Query(..., description="Architecture to use for analysis (required)"),
-    overlap: float = Query(0.0, ge=0.0, le=0.9, description="Overlap between epochs"),
-    simple_mode: bool = Query(True, description="Whether to use simplified feature extraction")
-):
-    """Generate a detailed analysis report with comprehensive recommendations"""
-    try:
-        ml_processor = get_ml_processor()
-        try:
-            model_type = sanitize_model_type(model_type)
-        except ValueError as ve:
-            raise HTTPException(status_code=400, detail=str(ve))
-        report = await ml_processor.generate_detailed_report(
-            data,
-            subject_id=validate_safe_id(str(data.get('subject_id', 'anonymous')), "subject_id"),
-            session_id=validate_safe_id(str(data.get('session_id', 'session_1')), "session_id"),
-            save_report=save_report,
-            model_type=model_type,
-            overlap=overlap,
-            simple_mode=simple_mode
-        )
-        return report
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating detailed report: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.post('/recommendations', summary="Get personalized recommendations", response_description="NLP-based recommendations")
 async def get_recommendations(
     state_durations: Dict[int, float] = Body(..., description="State durations mapping"),
@@ -431,24 +398,4 @@ async def generate_chat_name(
         raise
     except Exception as e:
         logger.error(f"Error generating chat name: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post('/generate-notes', summary="Generate session notes")
-async def generate_notes(
-    analysis_results: Dict[str, Any] = Body(..., description="Results from EEG analysis")
-):
-    """Generate session notes from analysis results"""
-    try:
-        # Simple logic to format notes
-        notes = f"Session conducted on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.\n"
-        notes += f"Primary State: {analysis_results.get('dominant_state', 'Unknown')}\n"
-        notes += "Key Observations:\n"
-        for rec in analysis_results.get('recommendations', []):
-            notes += f"- {rec}\n"
-            
-        return {"notes": notes}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating notes: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

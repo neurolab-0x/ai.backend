@@ -13,7 +13,7 @@ from src.utils.files import read_validated_audio_bytes
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Voice Analysis"])
+router = APIRouter()
 
 # Initialize voice processor (singleton)
 voice_processor = None
