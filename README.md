@@ -71,9 +71,13 @@ EEG:
 - `POST /api/v1/eeg/analyze`
 - `POST /api/v1/eeg/recommendations`
 - `POST /api/v1/eeg/decision-support`
-- `POST /api/v1/eeg/chat/submit`
-- `GET /api/v1/eeg/chat/status/{job_id}`
-- `GET /api/v1/eeg/chat/sse?job_id=...`
+
+Chat:
+- `POST /api/v1/chat`
+- `POST /api/v1/chat/submit`
+- `GET /api/v1/chat/status/{job_id}`
+- `GET /api/v1/chat/sse?job_id=...`
+- `POST /api/v1/chat/generate-name`
 
 Reports:
 - `POST /api/v1/reports/submit`
@@ -144,9 +148,9 @@ Defined in `.github/workflows/`:
 - Keep credentials out of git; use secret management in CI/CD.
 
 ## Background chat flow
-1. Submit a request with `POST /api/v1/eeg/chat/submit`.
-2. Open `GET /api/v1/eeg/chat/sse?job_id=...` to receive `queued`, `started`, `context_retrieved`, `generating_response`, `completed`, or `failed` events.
-3. Poll `GET /api/v1/eeg/chat/status/{job_id}` if SSE is not available.
+1. Submit a request with `POST /api/v1/chat/submit`.
+2. Open `GET /api/v1/chat/sse?job_id=...` to receive `queued`, `started`, `context_retrieved`, `generating_response`, `completed`, or `failed` events.
+3. Poll `GET /api/v1/chat/status/{job_id}` if SSE is not available.
 4. Set `generate_title=true` only if you want a follow-up `title_generated` event; it is no longer part of the main answer critical path.
 
 Run an RQ worker for the new queue:
