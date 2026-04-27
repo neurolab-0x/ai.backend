@@ -84,9 +84,16 @@ class DataHandler:
                 with open(file_path, 'r') as f:
                     data = json.load(f)
                     for entry in data:
+                        features = entry.get('features')
+                        if features is None:
+                            features = {
+                                key: value
+                                for key, value in entry.items()
+                                if key != 'timestamp'
+                            }
                         data_point = EEGDataPoint(
                             timestamp=datetime.fromisoformat(entry['timestamp']),
-                            features=entry['features'],
+                            features=features,
                             subject_id=subject_id,
                             session_id=session_id
                         )
