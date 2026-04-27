@@ -69,12 +69,20 @@ Legacy compatibility routes also exist (hidden from OpenAPI), including `/health
 EEG:
 - `POST /api/v1/eeg/upload`
 - `POST /api/v1/eeg/analyze`
-- `POST /api/v1/eeg/detailed-report`
 - `POST /api/v1/eeg/recommendations`
 - `POST /api/v1/eeg/decision-support`
 - `POST /api/v1/eeg/chat/submit`
 - `GET /api/v1/eeg/chat/status/{job_id}`
 - `GET /api/v1/eeg/chat/sse?job_id=...`
+
+Reports:
+- `POST /api/v1/reports/submit`
+- `GET /api/v1/reports/status/{job_id}`
+- `GET /api/v1/reports/jobs`
+- `GET /api/v1/reports/runs/{job_id}`
+- `GET /api/v1/reports/history`
+- `GET /api/v1/reports/runs/{job_id}/artifacts`
+- `GET /api/v1/reports/sse?job_id=...`
 
 Voice:
 - `POST /api/v1/voice/analyze`
@@ -86,7 +94,7 @@ Models:
 - `POST /api/v1/models/calibrate`
 
 ## Important request contract
-For EEG endpoints (`/upload`, `/analyze`, `/detailed-report`), `model_type` is required as a query param.
+For EEG endpoints (`/upload`, `/analyze`), `model_type` is required as a query param.
 
 Allowed values:
 - `original`
