@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY requirements.txt requirements-runtime.txt requirements-ml.txt requirements-voice.txt ./
 
 # Create virtual environment and install dependencies
 RUN python -m venv /opt/venv
