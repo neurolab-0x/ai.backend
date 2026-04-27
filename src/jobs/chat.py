@@ -27,6 +27,7 @@ async def _process_chat_request(request: Dict[str, Any], job_id: str) -> Dict[st
     publish_job_event("chat", job_id, "started", {"stage": "retrieving_context"})
     context = await retrieve_chat_context(
         subject_id=request.get("subject_id"),
+        auth_token=request.get("auth_token"),
         history=request.get("history"),
         include_health_data=bool(request.get("include_health_data", True)),
         limit=int(request.get("context_limit", 8)),
@@ -45,6 +46,7 @@ async def _process_chat_request(request: Dict[str, Any], job_id: str) -> Dict[st
     result = await generate_chat_exchange(
         message=str(request.get("message", "")).strip(),
         subject_id=request.get("subject_id"),
+        auth_token=request.get("auth_token"),
         history=context.get("history"),
         current_title=request.get("current_title"),
         include_health_data=bool(request.get("include_health_data", True)),

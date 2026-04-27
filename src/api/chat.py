@@ -53,6 +53,7 @@ class ChatJobRequest(BaseModel):
     conversation_id: Optional[str] = Field(None, description="Backend conversation identifier")
     history: Optional[List[Dict[str, Any]]] = Field(None, description="Recent conversation history")
     current_title: Optional[str] = Field(None, description="Current conversation title")
+    auth_token: Optional[str] = Field(None, description="Internal bearer token forwarded by the backend")
     include_health_data: bool = Field(True, description="Whether health history should be retrieved")
     context_limit: int = Field(8, ge=1, le=25, description="How many history items to retrieve from storage")
     generate_title: bool = Field(False, description="Generate a suggested title after the main answer is ready")
@@ -90,6 +91,7 @@ class ChatJobRequest(BaseModel):
 async def build_sync_chat_response(data: ChatJobRequest) -> Dict[str, Any]:
     context = await retrieve_chat_context(
         subject_id=data.subject_id,
+        auth_token=data.auth_token,
         history=data.history,
         include_health_data=data.include_health_data,
         limit=data.context_limit,
@@ -97,6 +99,7 @@ async def build_sync_chat_response(data: ChatJobRequest) -> Dict[str, Any]:
     result = await generate_chat_exchange(
         message=data.message,
         subject_id=data.subject_id,
+        auth_token=data.auth_token,
         history=context.get("history"),
         current_title=data.current_title,
         include_health_data=data.include_health_data,
@@ -108,21 +111,29 @@ async def build_sync_chat_response(data: ChatJobRequest) -> Dict[str, Any]:
 
 
 @router.post('/', summary="Generate AI chat response synchronously")
-async def generate_chat_response(data: ChatJobRequest):
+async def generate_chat_response(data: ChatJobRequest, request: Request):
     """Generate an immediate chat response using the shared chat service."""
     try:
+        data.auth_token = data.auth_token or request.headers.get("authorization")
         return await build_sync_chat_response(data)
     except HTTPException:
         raise
+    except RuntimeError as e:
+        logger.error(f"Chat generation unavailable: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Error generating synchronous chat response: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post('/submit', status_code=status.HTTP_202_ACCEPTED, summary="Submit AI chat request for background processing")
-async def submit_chat_job(data: ChatJobRequest):
+async def submit_chat_job(data: ChatJobRequest, request: Request):
     """Queue a chat request and return immediately with a job id."""
     try:
+        data.auth_token = data.auth_token or request.headers.get("authorization")
         require_rq()
         q = get_queue("chat")
         job = q.enqueue(
@@ -241,6 +252,12 @@ async def generate_chat_name(
         return {"name": title}
     except HTTPException:
         raise
+    except RuntimeError as e:
+        logger.error(f"Chat title generation unavailable: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Error generating chat name: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

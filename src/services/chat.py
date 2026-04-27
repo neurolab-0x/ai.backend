@@ -4,11 +4,19 @@ from typing import Any, Dict, List, Optional
 
 from src.services.database import db_service
 from src.services.llm import get_async_llm_client
+from src.services.user_context import fetch_user_context
 
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_ITEMS = 20
 MAX_HISTORY_CONTENT_CHARS = 4000
+
+
+def require_llm_client():
+    client = get_async_llm_client()
+    if not client.enabled:
+        raise RuntimeError("LLM chat is unavailable: OPENROUTER_API_KEY is not configured")
+    return client
 
 def normalize_history(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
@@ -28,42 +36,10 @@ def normalize_history(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str,
 
     return normalized
 
-
-def offline_title(history: List[Dict[str, str]], current_title: Optional[str] = None) -> str:
-    latest_user = next(
-        (entry["content"] for entry in reversed(history) if entry["role"] == "user"),
-        "",
-    )
-    words = [word for word in latest_user.replace("\n", " ").split(" ") if word][:6]
-    if words:
-        return " ".join(words)
-    return current_title or "New Conversation"
-
-
-def offline_reply(
-    message: str,
-    history: List[Dict[str, str]],
-    include_health_data: bool = True,
-) -> str:
-    latest_topics = ", ".join(
-        entry["content"][:40]
-        for entry in history[-3:]
-        if entry["role"] == "user"
-    )
-    if include_health_data:
-        return (
-            "I am running in offline mode, but I can still help you reason through your neural health data. "
-            f"You asked: \"{message.strip()}\". Recent topics in this conversation include: {latest_topics or 'this new request'}."
-        )
-    return (
-        "I am running in offline mode, but I can still help with general discussion. "
-        f"You asked: \"{message.strip()}\"."
-    )
-
-
 async def retrieve_chat_context(
     *,
     subject_id: Optional[str] = None,
+    auth_token: Optional[str] = None,
     history: Optional[List[Dict[str, Any]]] = None,
     include_health_data: bool = True,
     limit: int = 8,
@@ -74,9 +50,45 @@ async def retrieve_chat_context(
         "history_excerpt": normalized_history[-12:],
         "health_history": [],
         "health_context": "",
+        "user_profile": None,
     }
 
     if not include_health_data or not subject_id:
+        return context
+
+    if auth_token:
+        backend_context = await fetch_user_context(
+            auth_token=auth_token,
+            subject_id=subject_id,
+            analysis_limit=limit,
+        )
+        user_profile = backend_context.get("user")
+        analyses = backend_context.get("analyses") or []
+        context["user_profile"] = user_profile
+        context["health_history"] = analyses
+
+        profile_lines = []
+        if user_profile:
+            profile_lines.extend(
+                [
+                    f"- User full name: {user_profile.get('fullName') or 'unknown'}",
+                    f"- Username: {user_profile.get('username') or 'unknown'}",
+                    f"- Role: {user_profile.get('role') or 'unknown'}",
+                ]
+            )
+            if user_profile.get("email"):
+                profile_lines.append(f"- Email: {user_profile['email']}")
+            if user_profile.get("phone"):
+                profile_lines.append(f"- Phone: {user_profile['phone']}")
+
+        history_lines = []
+        for item in analyses:
+            history_lines.append(
+                f"- {item.get('timestamp')}: analysis status {item.get('status')}, "
+                f"notes {item.get('aiNotes') or 'none'}, results {item.get('results') or {}}"
+            )
+
+        context["health_context"] = "\n".join([*profile_lines, *history_lines]).strip()
         return context
 
     try:
@@ -114,9 +126,7 @@ async def generate_conversation_title(
     if not history:
         return current_title or "New Conversation"
 
-    client = get_async_llm_client()
-    if not client.enabled:
-        return offline_title(history, current_title)
+    client = require_llm_client()
 
     transcript = "\n".join(
         f"{item['role'].capitalize()}: {item['content']}" for item in history[-8:]
@@ -138,13 +148,14 @@ async def generate_conversation_title(
         return title or current_title or "New Conversation"
     except Exception as exc:
         logger.error(f"Failed to generate conversation title: {exc}")
-        return offline_title(history, current_title)
+        raise RuntimeError("LLM title generation failed") from exc
 
 
 async def generate_chat_exchange(
     *,
     message: str,
     subject_id: Optional[str] = None,
+    auth_token: Optional[str] = None,
     history: Optional[List[Dict[str, Any]]] = None,
     current_title: Optional[str] = None,
     include_health_data: bool = True,
@@ -153,39 +164,36 @@ async def generate_chat_exchange(
 ) -> Dict[str, Any]:
     context = retrieval_context or await retrieve_chat_context(
         subject_id=subject_id,
+        auth_token=auth_token,
         history=history,
         include_health_data=include_health_data,
     )
     normalized_history = context["history"]
     history_context = context["health_context"]
-    client = get_async_llm_client()
-
-    if not client.enabled:
-        response = offline_reply(
-            message=message,
-            history=normalized_history,
-            include_health_data=include_health_data,
+    client = require_llm_client()
+    system_prompt = (
+        "You are the NeuroLab AI assistant. Provide concise, practical, scientifically grounded responses "
+        "about EEG, cognition, sleep, stress, and neural health."
+    )
+    if history_context:
+        system_prompt += (
+            "\nUse the following prior user context if it is relevant to the latest question:\n"
+            f"{history_context}"
         )
-    else:
-        system_prompt = (
-            "You are the NeuroLab AI assistant. Provide concise, practical, scientifically grounded responses "
-            "about EEG, cognition, sleep, stress, and neural health."
-        )
-        if history_context:
-            system_prompt += (
-                "\nUse the following prior user context if it is relevant to the latest question:\n"
-                f"{history_context}"
-            )
 
-        chat_messages = [{"role": "system", "content": system_prompt}]
-        chat_messages.extend(normalized_history[-12:])
-        chat_messages.append({"role": "user", "content": message.strip()})
+    chat_messages = [{"role": "system", "content": system_prompt}]
+    chat_messages.extend(normalized_history[-12:])
+    chat_messages.append({"role": "user", "content": message.strip()})
 
+    try:
         response = await client.create_chat_completion(
             messages=chat_messages,
             temperature=0.5,
             max_tokens=700,
         )
+    except Exception as exc:
+        logger.error(f"Failed to generate chat response: {exc}")
+        raise RuntimeError("LLM chat generation failed") from exc
 
     suggested_title = current_title
     should_update_title = False
