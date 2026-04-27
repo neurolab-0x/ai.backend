@@ -1,196 +1,117 @@
 """
-Test script for Voice Processing API
-Tests the voice analysis endpoints
+In-process tests for the voice API router.
 """
-
-import requests
-import json
 import base64
-from pathlib import Path
+import io
+from types import SimpleNamespace
 
-# API base URL
-BASE_URL = "http://localhost:8000"
+import httpx
+import numpy as np
+import pytest
+from fastapi import FastAPI
 
-def test_voice_health():
-    """Test voice processor health endpoint"""
-    print("\n=== Testing Voice Health Endpoint ===")
-    response = requests.get(f"{BASE_URL}/voice/health")
-    print(f"Status Code: {response.status_code}")
-    print(f"Response: {json.dumps(response.json(), indent=2)}")
-    return response.status_code == 200
+import src.api.voice as voice_api
 
-def test_get_emotions():
-    """Test get supported emotions endpoint"""
-    print("\n=== Testing Get Emotions Endpoint ===")
-    response = requests.get(f"{BASE_URL}/voice/emotions")
-    print(f"Status Code: {response.status_code}")
-    print(f"Response: {json.dumps(response.json(), indent=2)}")
-    return response.status_code == 200
 
-def test_analyze_audio(audio_file_path):
-    """Test audio analysis with file upload"""
-    print(f"\n=== Testing Audio Analysis with {audio_file_path} ===")
-    
-    if not Path(audio_file_path).exists():
-        print(f"Error: File {audio_file_path} not found")
-        return False
-    
-    with open(audio_file_path, 'rb') as f:
-        files = {'file': (Path(audio_file_path).name, f, 'audio/wav')}
-        response = requests.post(f"{BASE_URL}/voice/analyze", files=files)
-    
-    print(f"Status Code: {response.status_code}")
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Response: {json.dumps(result, indent=2)}")
-        
-        # Print key results
-        if 'data' in result:
-            data = result['data']
-            print(f"\n--- Key Results ---")
-            print(f"Emotion: {data.get('emotion')}")
-            print(f"Confidence: {data.get('confidence'):.2f}")
-            print(f"Mental State: {data.get('mental_state')} (0=relaxed, 1=focused, 2=stressed)")
-    else:
-        print(f"Error: {response.text}")
-    
-    return response.status_code == 200
+app = FastAPI()
+app.include_router(voice_api.router, prefix="/api/v1/voice")
 
-def test_analyze_raw_audio():
-    """Test raw audio analysis with base64 data"""
-    print("\n=== Testing Raw Audio Analysis ===")
-    
-    # Create a simple sine wave as test audio (1 second at 16kHz)
-    import numpy as np
-    sample_rate = 16000
-    duration = 1.0
-    frequency = 440  # A4 note
-    
-    t = np.linspace(0, duration, int(sample_rate * duration))
-    audio = np.sin(2 * np.pi * frequency * t)
-    
-    # Convert to int16
-    audio_int16 = (audio * 32767).astype(np.int16)
-    audio_bytes = audio_int16.tobytes()
-    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-    
-    payload = {
-        "audio_data": {
-            "data": audio_base64,
-            "format": "base64"
+
+@pytest.fixture(autouse=True)
+def mock_voice_processor(monkeypatch):
+    processor = SimpleNamespace(
+        model=object(),
+        processor=object(),
+        device="cpu",
+        sample_rate=16000,
+        emotion_to_state={
+            "calm": 0,
+            "happy": 1,
+            "angry": 2,
         },
-        "sample_rate": sample_rate
-    }
-    
-    response = requests.post(
-        f"{BASE_URL}/voice/analyze-raw",
-        json=payload
+        process_audio=lambda audio_bytes, sample_rate=None: {
+            "emotion": "calm",
+            "confidence": 0.93,
+            "mental_state": 0,
+            "emotion_probabilities": {"calm": 0.93, "happy": 0.04, "angry": 0.03},
+            "features": {"rms": 0.5},
+        },
     )
-    
-    print(f"Status Code: {response.status_code}")
-    if response.status_code == 200:
-        print(f"Response: {json.dumps(response.json(), indent=2)}")
-    else:
-        print(f"Error: {response.text}")
-    
-    return response.status_code == 200
+    monkeypatch.setattr(voice_api, "get_voice_processor", lambda: processor)
 
-def test_batch_analysis(audio_files):
-    """Test batch audio analysis"""
-    print(f"\n=== Testing Batch Audio Analysis with {len(audio_files)} files ===")
-    
-    files = []
-    for audio_file in audio_files:
-        if Path(audio_file).exists():
-            files.append(('files', (Path(audio_file).name, open(audio_file, 'rb'), 'audio/wav')))
-        else:
-            print(f"Warning: File {audio_file} not found, skipping")
-    
-    if not files:
-        print("Error: No valid files to upload")
-        return False
-    
-    response = requests.post(f"{BASE_URL}/voice/analyze-batch", files=files)
-    
-    # Close file handles
-    for _, (_, f, _) in files:
-        f.close()
-    
-    print(f"Status Code: {response.status_code}")
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Processed {result.get('processed_files')} files")
-        if result.get('pattern_analysis'):
-            print(f"\n--- Pattern Analysis ---")
-            print(f"Dominant Emotion: {result['pattern_analysis'].get('dominant_emotion')}")
-            print(f"Average Confidence: {result['pattern_analysis'].get('average_confidence'):.2f}")
-            print(f"Average Mental State: {result['pattern_analysis'].get('average_mental_state'):.2f}")
-    else:
-        print(f"Error: {response.text}")
-    
-    return response.status_code == 200
 
-def main():
-    """Run all tests"""
-    print("=" * 60)
-    print("Voice Processing API Test Suite")
-    print("=" * 60)
-    print("\nMake sure the API server is running on http://localhost:8000")
-    print("Start it with: uvicorn main:app")
-    
-    # Check if server is running
-    try:
-        response = requests.get(f"{BASE_URL}/health", timeout=2)
-        print(f"✓ Server is running")
-    except requests.exceptions.ConnectionError:
-        print("✗ Error: Server is not running!")
-        print("  Start it with: uvicorn main:app")
-        return
-    except Exception as e:
-        print(f"✗ Error connecting to server: {e}")
-        return
-    
-    # Test health endpoint
-    try:
-        test_voice_health()
-    except Exception as e:
-        print(f"Error testing health: {e}")
-    
-    # Test emotions endpoint
-    try:
-        test_get_emotions()
-    except Exception as e:
-        print(f"Error testing emotions: {e}")
-    
-    # Test with sample audio file (if available)
-    sample_audio = "test_audio.wav"
-    if Path(sample_audio).exists():
-        try:
-            test_analyze_audio(sample_audio)
-        except Exception as e:
-            print(f"Error testing audio analysis: {e}")
-    else:
-        print(f"\n=== Skipping file upload test (no {sample_audio} found) ===")
-        print("Generate test audio with: python generate_test_audio.py")
-    
-    # Test raw audio analysis
-    try:
-        test_analyze_raw_audio()
-    except Exception as e:
-        print(f"Error testing raw audio: {e}")
-    
-    # Test batch analysis if multiple files exist
-    batch_files = [f"test_audio_{i}.wav" for i in range(1, 4)]
-    existing_files = [f for f in batch_files if Path(f).exists()]
-    if len(existing_files) >= 2:
-        try:
-            test_batch_analysis(existing_files)
-        except Exception as e:
-            print(f"Error testing batch analysis: {e}")
-    
-    print("\n" + "=" * 60)
-    print("Test Suite Complete")
-    print("=" * 60)
+@pytest.fixture
+async def async_client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
 
-if __name__ == "__main__":
-    main()
+
+@pytest.mark.anyio
+async def test_voice_health(async_client):
+    response = await async_client.get("/api/v1/voice/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert data["model_loaded"] is True
+
+
+@pytest.mark.anyio
+async def test_get_emotions(async_client):
+    response = await async_client.get("/api/v1/voice/emotions")
+    assert response.status_code == 200
+    data = response.json()
+    assert "emotions" in data
+    assert "emotion_to_state_mapping" in data
+
+
+@pytest.mark.anyio
+async def test_analyze_audio(async_client):
+    files = {
+        "file": ("test.wav", io.BytesIO(b"RIFFfakeWAVEdata"), "audio/wav"),
+    }
+    response = await async_client.post("/api/v1/voice/analyze", files=files)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["data"]["emotion"] == "calm"
+
+
+@pytest.mark.anyio
+async def test_analyze_raw_audio(async_client):
+    sample_rate = 16000
+    duration = 0.05
+    frequency = 440
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    audio = np.sin(2 * np.pi * frequency * t)
+    audio_int16 = (audio * 32767).astype(np.int16)
+    audio_base64 = base64.b64encode(audio_int16.tobytes()).decode("utf-8")
+
+    response = await async_client.post(
+        "/api/v1/voice/analyze-raw",
+        json={
+            "audio_data": {
+                "data": audio_base64,
+                "format": "base64",
+            },
+            "sample_rate": sample_rate,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["mental_state"] == 0
+
+
+@pytest.mark.anyio
+async def test_batch_analysis(async_client):
+    files = [
+        ("files", ("segment1.wav", io.BytesIO(b"RIFFsegment1"), "audio/wav")),
+        ("files", ("segment2.wav", io.BytesIO(b"RIFFsegment2"), "audio/wav")),
+    ]
+
+    response = await async_client.post("/api/v1/voice/analyze-batch", files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["processed_files"] == 2
+    assert body["pattern_analysis"]["dominant_emotion"] == "calm"
