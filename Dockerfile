@@ -4,12 +4,15 @@ FROM python:3.11-slim AS builder
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install build dependencies required by scientific/audio packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
     git \
+    cmake \
+    pkg-config \
+    libsndfile1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -19,7 +22,7 @@ COPY requirements.txt requirements-runtime.txt requirements-ml.txt requirements-
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Final stage
 FROM python:3.11-slim
@@ -27,9 +30,10 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install runtime dependencies only
+# Install runtime dependencies required by numerical/audio packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
