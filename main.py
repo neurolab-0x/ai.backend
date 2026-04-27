@@ -13,6 +13,7 @@ from src.utils.logging_setup import configure_logging
 from src.api.training import router as training_router
 from src.api.voice import router as voice_router
 from src.api.analysis import router as analysis_router
+from src.api.chat import router as chat_router
 from src.api.system import router as system_router
 from src.api.model import router as model_mgmt_router
 from src.api.reports import router as reports_router
@@ -86,6 +87,7 @@ async def openapi_redirect():
 # Versioned API routers (standardized)
 app.include_router(system_router, prefix=API_PREFIX, tags=["System"])
 app.include_router(analysis_router, prefix=f"{API_PREFIX}/eeg", tags=["EEG"], dependencies=[Depends(require_auth)])
+app.include_router(chat_router, prefix=f"{API_PREFIX}/chat", tags=["Chat"], dependencies=[Depends(require_auth)])
 app.include_router(training_router, prefix=f"{API_PREFIX}/training", tags=["Training"], dependencies=[Depends(require_auth)])
 app.include_router(reports_router, prefix=f"{API_PREFIX}/reports", tags=["Reports"], dependencies=[Depends(require_auth)])
 app.include_router(voice_router, prefix=f"{API_PREFIX}/voice", tags=["Voice"], dependencies=[Depends(require_auth)])
@@ -97,6 +99,7 @@ if STREAMING_AVAILABLE:
 # Legacy routes (backward-compatible, hidden from Swagger)
 app.include_router(system_router, include_in_schema=False)
 app.include_router(analysis_router, include_in_schema=False, dependencies=[Depends(require_auth)])
+app.include_router(chat_router, prefix="/api/chat", include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(training_router, prefix="/api/training", include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(reports_router, prefix="/api/reports", include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(voice_router, prefix="/api/voice", include_in_schema=False, dependencies=[Depends(require_auth)])
