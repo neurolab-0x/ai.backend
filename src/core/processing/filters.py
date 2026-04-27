@@ -1,6 +1,10 @@
 import numpy as np
 from scipy import signal
-import matplotlib.pyplot as plt
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError:  # pragma: no cover - optional plotting dependency
+    plt = None
 
 
 def apply_bandpass_filter(data, low_freq, high_freq, fs=250, order=4):
@@ -296,6 +300,9 @@ def plot_filter_response(fs=250):
     fs : float
         Sampling frequency in Hz
     """
+    if plt is None:
+        raise RuntimeError("matplotlib is required to plot filter responses")
+
     # Set up figure
     fig, axs = plt.subplots(3, 1, figsize=(10, 12))
     

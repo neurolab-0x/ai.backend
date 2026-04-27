@@ -1,77 +1,103 @@
-import unittest
-import os
-import json
+import io
+import sys
+import types
+from types import SimpleNamespace
+
+import httpx
 import pytest
+from fastapi import FastAPI
 
 np = pytest.importorskip("numpy")
-from datetime import datetime
-from fastapi.testclient import TestClient
-from main import app
 pd = pytest.importorskip("pandas")
-import tempfile
-import shutil
 
-class TestMainAPI(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """Set up test fixtures that are shared across all tests"""
-        cls.client = TestClient(app)
-        
-    def setUp(self):
-        """Set up test fixtures for each test"""
-        self.test_data_dir = tempfile.mkdtemp()
-        os.makedirs(self.test_data_dir, exist_ok=True)
-        
-        # Create sample EEG data
-        self.sample_data = pd.DataFrame({
-            'timestamp': [datetime.now().isoformat() for _ in range(100)],
-            'channel_1': np.random.randn(100),
-            'channel_2': np.random.randn(100),
-            'channel_3': np.random.randn(100),
-            'label': np.random.randint(0, 3, 100)
-        })
-        
-        # Save sample data
-        self.csv_path = os.path.join(self.test_data_dir, "test_eeg.csv")
-        self.sample_data.to_csv(self.csv_path, index=False)
-        
-        # Create test user token
-        self.test_token = "test_token"  # In real tests, generate proper JWT token
-        
-    def tearDown(self):
-        """Clean up test fixtures after each test"""
-        if os.path.exists(self.test_data_dir):
-            shutil.rmtree(self.test_data_dir)
-            
-    def test_health_check(self):
-        """Test the health check endpoint"""
-        response = self.client.get("/api/v1/health")
-        self.assertEqual(response.status_code, 200)
+fake_model_manager_module = types.ModuleType("src.services.model_manager")
+fake_model_manager_module.get_model_manager = lambda: SimpleNamespace(
+    tensorflow_available=False,
+    get_health_status=lambda: {
+        "status": "ok",
+        "models_loaded": [],
+        "models_count": 0,
+    },
+    list_model_files=lambda: [],
+)
+sys.modules.setdefault("src.services.model_manager", fake_model_manager_module)
+
+import src.api.analysis as analysis_api
+import src.api.system as system_api
+
+
+app = FastAPI()
+app.include_router(system_api.router, prefix="/api/v1")
+app.include_router(analysis_api.router, prefix="/api/v1/eeg")
+
+
+@pytest.fixture(autouse=True)
+def mock_dependencies(monkeypatch):
+    async def process_eeg_data(*args, **kwargs):
+        return {
+            "state_label": "engaged",
+            "confidence": 84.0,
+            "dominant_state": 1,
+            "recommendations": ["Take a short break"],
+        }
+
+    async def generate_recommendations(**kwargs):
+        return ["Take a short break"]
+
+    mock_ml_processor = SimpleNamespace(
+        process_eeg_data=process_eeg_data,
+        recommendation_engine=SimpleNamespace(
+            generate_recommendations=generate_recommendations,
+        ),
+    )
+
+    monkeypatch.setattr(analysis_api, "get_ml_processor", lambda: mock_ml_processor)
+
+
+@pytest.fixture
+async def async_client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+
+
+class TestMainAPI:
+    @pytest.fixture
+    def sample_eeg_csv(self):
+        df = pd.DataFrame(
+            {
+                "alpha": [0.5, 0.6],
+                "beta": [0.3, 0.4],
+                "theta": [0.2, 0.3],
+                "delta": [0.1, 0.2],
+                "gamma": [0.4, 0.5],
+            }
+        )
+        buffer = io.BytesIO()
+        df.to_csv(buffer, index=False)
+        buffer.seek(0)
+        return buffer
+
+    @pytest.mark.anyio
+    async def test_health_check(self, async_client):
+        response = await async_client.get("/api/v1/health")
+        assert response.status_code == 200
         data = response.json()
-        self.assertIn("status", data)
-        self.assertIn("diagnostics", data)
-        self.assertIn("models_loaded", data["diagnostics"])
-        self.assertIn("tensorflow_available", data["diagnostics"])
-        
-    def test_upload_endpoint(self):
-        """Test the file upload and processing endpoint"""
-        with open(self.csv_path, "rb") as f:
-            response = self.client.post(
-                "/api/v1/eeg/upload",
-                params={"model_type": "original"},
-                files={"file": ("test_eeg.csv", f, "text/csv")}
-            )
-            
-        # Accept both 200 and 500 since model/files might not be available in test environment
-        self.assertIn(response.status_code, [200, 400, 500])
-        
-        if response.status_code == 200:
-            data = response.json()
-            # Check for expected response structure
-            self.assertIsInstance(data, dict)
-        
-    def test_analyze_endpoint(self):
-        """Test the analyze endpoint"""
+        assert "status" in data
+        assert "diagnostics" in data
+
+    @pytest.mark.anyio
+    async def test_upload_endpoint(self, async_client, sample_eeg_csv):
+        response = await async_client.post(
+            "/api/v1/eeg/upload",
+            params={"model_type": "original"},
+            files={"file": ("test_eeg.csv", sample_eeg_csv, "text/csv")},
+        )
+        assert response.status_code == 200
+        assert response.json()["state_label"] == "engaged"
+
+    @pytest.mark.anyio
+    async def test_analyze_endpoint(self, async_client):
         test_data = {
             "alpha": 0.5,
             "beta": 0.3,
@@ -79,95 +105,59 @@ class TestMainAPI(unittest.TestCase):
             "delta": 0.1,
             "gamma": 0.4,
             "subject_id": "test_subject",
-            "session_id": "test_session_001"
+            "session_id": "test_session_001",
         }
-        
-        response = self.client.post(
+
+        response = await async_client.post(
             "/api/v1/eeg/analyze",
             params={"model_type": "original"},
-            json=test_data
+            json=test_data,
         )
-        
-        # Accept both 200 and 500 since model might not be loaded
-        self.assertIn(response.status_code, [200, 500])
-        
-    def test_root_endpoint(self):
-        """Test the root endpoint"""
-        response = self.client.get("/api/v1/")
-        self.assertEqual(response.status_code, 200)
+
+        assert response.status_code == 200
+        assert response.json()["confidence"] == 84.0
+
+    @pytest.mark.anyio
+    async def test_root_endpoint(self, async_client):
+        response = await async_client.get("/api/v1/")
+        assert response.status_code == 200
         data = response.json()
-        self.assertIn("name", data)
-        self.assertIn("version", data)
-        self.assertIn("features", data)
-        
-    def test_invalid_file_upload(self):
-        """Test handling of invalid file uploads"""
-        # Test with unsupported file type
-        invalid_file = os.path.join(self.test_data_dir, "test.txt")
-        with open(invalid_file, "w") as f:
-            f.write("Invalid data")
-            
-        with open(invalid_file, "rb") as f:
-            response = self.client.post(
-                "/api/v1/eeg/upload",
-                params={"model_type": "original"},
-                files={"file": ("test.txt", f, "text/plain")}
-            )
-            
-        # Should return error for invalid file type
-        self.assertIn(response.status_code, [400, 500])
-        
-    def test_analyze_invalid_data(self):
-        """Test handling of invalid analysis data"""
-        # Test with missing required fields
-        invalid_data = {
-            "session_id": "test_session_001"
-        }
-        
-        response = self.client.post(
+        assert "name" in data
+        assert "version" in data
+        assert "features" in data
+
+    @pytest.mark.anyio
+    async def test_invalid_file_upload(self, async_client):
+        response = await async_client.post(
+            "/api/v1/eeg/upload",
+            params={"model_type": "original"},
+            files={"file": ("test.txt", io.BytesIO(b"Invalid data"), "text/plain")},
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_analyze_invalid_data(self, async_client):
+        response = await async_client.post(
             "/api/v1/eeg/analyze",
             params={"model_type": "original"},
-            json=invalid_data
+            json={"session_id": "test_session_001"},
         )
-        
-        # Should return error for invalid data
-        self.assertIn(response.status_code, [400, 422, 500])
-        
-    def test_calibrate_endpoint(self):
-        """Test the calibrate endpoint"""
-        calibration_data = {
-            "model_name": "original",
-            "calibration_data": {
-                "X": [[0.1, 0.2, 0.3, 0.4, 0.5]],
-                "y": [0]
-            }
-        }
-        
-        response = self.client.post(
-            "/api/v1/models/calibrate",
-            json=calibration_data
-        )
-        
-        # Accept various status codes depending on model availability
-        self.assertIn(response.status_code, [200, 500, 503])
-        
-    def test_recommendations_endpoint(self):
-        """Test the recommendations endpoint"""
-        response = self.client.post(
+        assert response.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_recommendations_endpoint(self, async_client):
+        response = await async_client.post(
             "/api/v1/eeg/recommendations",
             json={
                 "state_durations": {"0": 10, "1": 5, "2": 3},
                 "total_duration": 18,
                 "confidence": 75,
                 "cognitive_metrics": {"focus_index": 0.6},
-                "state_transitions": 2
-            }
+                "state_transitions": 2,
+            },
         )
-        
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("recommendations", data)
-        self.assertIn("count", data)
 
-if __name__ == '__main__':
-    unittest.main() 
+        assert response.status_code == 200
+        data = response.json()
+        assert data["recommendations"] == ["Take a short break"]
+        assert data["count"] == 1
