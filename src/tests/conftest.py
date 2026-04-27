@@ -6,8 +6,6 @@ import os
 import sys
 import tempfile
 import shutil
-import numpy as np
-import pandas as pd
 from datetime import datetime
 
 # Add parent directory to path
@@ -27,6 +25,8 @@ def test_data_dir():
 @pytest.fixture
 def sample_eeg_data():
     """Generate sample EEG data for testing"""
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
     return pd.DataFrame({
         'timestamp': [datetime.now().isoformat() for _ in range(100)],
         'alpha': np.random.randn(100),
@@ -54,7 +54,7 @@ def sample_eeg_json(test_data_dir, sample_eeg_data):
 @pytest.fixture
 def mock_model():
     """Create a mock model for testing"""
-    import tensorflow as tf
+    tf = pytest.importorskip("tensorflow")
     
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(5, 1)),

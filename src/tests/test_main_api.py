@@ -1,12 +1,13 @@
 import unittest
 import os
 import json
-import numpy as np
+import pytest
+
+np = pytest.importorskip("numpy")
 from datetime import datetime
 from fastapi.testclient import TestClient
 from main import app
-import pandas as pd
-import pytest
+pd = pytest.importorskip("pandas")
 import tempfile
 import shutil
 

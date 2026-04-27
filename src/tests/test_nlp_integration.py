@@ -1,7 +1,9 @@
 """
 Test script for NLP recommendations integration
 """
-import numpy as np
+import pytest
+
+np = pytest.importorskip("numpy")
 from src.services.analysis import MLProcessor
 from src.services.recommendation import NLPRecommendationEngine
 

@@ -5,7 +5,9 @@ import sys
 import tempfile
 import unittest
 
-import numpy as np
+import pytest
+
+np = pytest.importorskip("numpy")
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -18,7 +20,7 @@ try:
         save_model as save_trained_model,
         train_hybrid_model,
     )
-    import tensorflow as tf
+    tf = pytest.importorskip("tensorflow")
 
     MODELS_AVAILABLE = True
 except ImportError as e:

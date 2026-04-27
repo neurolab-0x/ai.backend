@@ -3,8 +3,8 @@ Integration tests for FastAPI endpoints using TestClient and pytest
 """
 import pytest
 from fastapi.testclient import TestClient
-import pandas as pd
-import numpy as np
+pd = pytest.importorskip("pandas")
+np = pytest.importorskip("numpy")
 import io
 import os
 from unittest.mock import patch, MagicMock
