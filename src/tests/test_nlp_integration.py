@@ -7,7 +7,6 @@ import pytest
 
 import src.services.analysis as analysis_module
 import src.services.recommendation as recommendation_module
-from src.services.analysis import MLProcessor
 from src.services.recommendation import NLPRecommendationEngine
 
 
