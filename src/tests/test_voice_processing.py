@@ -1,72 +1,80 @@
 """
-Tests for Voice Processing API
+Additional in-process tests for voice endpoints.
 """
-import pytest
-from fastapi.testclient import TestClient
-from main import app
 import io
-import os
+from types import SimpleNamespace
 
-client = TestClient(app)
+import httpx
+import pytest
+from fastapi import FastAPI
 
-# We check if voice dependencies are likely present by checking imports in code or checking endpoint health
-# If dependencies are missing, voice router might not be fully functional or endpoints might error.
+import src.api.voice as voice_api
+
+
+app = FastAPI()
+app.include_router(voice_api.router, prefix="/voice")
+
+
+@pytest.fixture(autouse=True)
+def mock_voice_processor(monkeypatch):
+    processor = SimpleNamespace(
+        model=object(),
+        processor=object(),
+        device="cpu",
+        sample_rate=16000,
+        emotion_to_state={"calm": 0, "happy": 1, "angry": 2},
+        process_audio=lambda audio_bytes, sample_rate=None: {
+            "emotion": "happy",
+            "confidence": 0.88,
+            "mental_state": 1,
+            "emotion_probabilities": {"happy": 0.88, "calm": 0.1, "angry": 0.02},
+            "features": {"rms": 0.4},
+        },
+    )
+    monkeypatch.setattr(voice_api, "get_voice_processor", lambda: processor)
+
+
+@pytest.fixture
+async def async_client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+
 
 class TestVoiceAPI:
-    
     @pytest.fixture
     def mock_audio_file(self):
-        """Create a mock WAV file in memory"""
-        # Minimal valid WAV header + silence
-        # This is just 44 bytes of header + 0 bytes data
         wav_header = (
-            b'RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+            b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00"
+            b"\x88X\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
         )
         return io.BytesIO(wav_header)
 
-    def test_voice_health(self):
-        """Test voice module health check"""
-        try:
-            response = client.get("/voice/health")
-            # If the endpoint doesn't exist (router not included), valid 404
-            # If included, should be 200
-            if response.status_code == 404:
-                pytest.skip("Voice router not mounted")
-            
-            assert response.status_code == 200
-            data = response.json()
-            assert "status" in data
-        except Exception:
-            pytest.fail("Voice health check failed invalidly")
+    @pytest.mark.anyio
+    async def test_voice_health(self, async_client):
+        response = await async_client.get("/voice/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
 
-    def test_voice_emotions_list(self):
-        """Test getting supported emotions"""
-        response = client.get("/voice/emotions")
-        if response.status_code == 404:
-            pytest.skip("Voice router not mounted")
-            
+    @pytest.mark.anyio
+    async def test_voice_emotions_list(self, async_client):
+        response = await async_client.get("/voice/emotions")
         assert response.status_code == 200
         data = response.json()
         assert "emotions" in data
         assert isinstance(data["emotions"], list)
 
-    def test_analyze_audio_file(self, mock_audio_file):
-        """Test audio file analysis endpoint"""
+    @pytest.mark.anyio
+    async def test_analyze_audio_file(self, async_client, mock_audio_file):
         files = {
-            "file": ("test_audio.wav", mock_audio_file, "audio/wav")
+            "file": ("test_audio.wav", mock_audio_file, "audio/wav"),
         }
-        
-        response = client.post("/voice/analyze", files=files)
-        
-        if response.status_code == 404:
-            pytest.skip("Voice router not mounted")
-            
-        # It might fail with 500 if libraries (librosa) are missing in the test environment
-        # or if the model file is missing.
-        # We accept 200 or 500, checking structure if 200.
-        
-        if response.status_code == 200:
-            result = response.json()
-            assert "data" in result
-            assert "emotion" in result["data"]
-            assert "mental_state" in result["data"]
+
+        response = await async_client.post("/voice/analyze", files=files)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert "data" in result
+        assert result["data"]["emotion"] == "happy"
+        assert result["data"]["mental_state"] == 1
