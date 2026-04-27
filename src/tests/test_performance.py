@@ -1,9 +1,10 @@
 import time
-import tensorflow as tf
-import numpy as np
+import pytest
+
+tf = pytest.importorskip("tensorflow")
+np = pytest.importorskip("numpy")
 import os
 import sys
-import pytest
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import logging
 

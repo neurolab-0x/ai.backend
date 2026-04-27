@@ -4,8 +4,10 @@ import unittest
 from dataclasses import dataclass
 from datetime import datetime
 
-import numpy as np
-import pandas as pd
+import pytest
+
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
 
 from src.services.data_service import DataHandler, EEGDataPoint
 

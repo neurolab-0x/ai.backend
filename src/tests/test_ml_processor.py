@@ -2,8 +2,8 @@
 Test script for ML Processor integration using pytest
 """
 import pytest
-import numpy as np
-import pandas as pd
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
 import os
 from src.services.analysis import MLProcessor
 
