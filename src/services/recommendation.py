@@ -1,6 +1,5 @@
-from groq import Groq
-from src.config.settings import LLM_CONFIG
 from src.services.database import db_service
+from src.services.llm import get_async_llm_client
 import logging
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
@@ -34,16 +33,9 @@ class NLPRecommendationEngine:
     """
     
     def __init__(self):
-        self.client = None
-        if LLM_CONFIG.get('api_key'):
-            try:
-                self.client = Groq(api_key=LLM_CONFIG['api_key'])
-                logger.info(f"Groq client initialized with model: {LLM_CONFIG['model']}")
-            except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {e}")
-        else:
-            logger.warning("GROQ_API_KEY not found in environment. Falling back to rule-based logic.")
-            
+        self.client = get_async_llm_client()
+        if not self.client.enabled:
+            logger.warning("OPENROUTER_API_KEY not found in environment. Falling back to rule-based logic.")
         logger.info("NLP Recommendation Engine initialized")
 
     def _build_context(
@@ -155,14 +147,11 @@ You are the NeuroLab AI Neural Health Expert. Your task is to provide personaliz
 Recommendations:
 """
         try:
-            completion = self.client.chat.completions.create(
-                model=LLM_CONFIG['model'],
+            response = await self.client.create_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=LLM_CONFIG['temperature'],
-                max_tokens=LLM_CONFIG['max_tokens'],
+                temperature=0.6,
+                max_tokens=700,
             )
-            
-            response = completion.choices[0].message.content
             lines = [line.strip() for line in response.split('\n') if line.strip() and (line.strip().startswith('•') or line.strip().startswith('-') or line.strip().startswith('*') or (len(line) > 2 and line[1] == '.'))]
             
             if not lines:
@@ -208,12 +197,13 @@ Format as JSON:
 }}
 """
         try:
-            completion = self.client.chat.completions.create(
-                model=LLM_CONFIG['model'],
+            raw = await self.client.create_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                response_format={ "type": "json_object" }
+                temperature=0.3,
+                max_tokens=900,
+                response_format={"type": "json_object"},
             )
-            explanation = json.loads(completion.choices[0].message.content)
+            explanation = json.loads(raw)
             explanation["metadata"] = {
                 "timestamp": context.timestamp.isoformat(),
                 "subject_id": context.subject_id,
