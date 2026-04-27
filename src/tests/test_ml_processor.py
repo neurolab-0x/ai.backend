@@ -9,7 +9,6 @@ np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 
 import src.services.analysis as analysis_module
-from src.services.analysis import MLProcessor
 
 
 class IdentityScaler:
@@ -63,7 +62,7 @@ def processor(monkeypatch):
         ),
     )
     monkeypatch.setattr(analysis_module, "safe_enqueue", lambda *args, **kwargs: None)
-    return MLProcessor(default_model="enhanced_cnn_lstm")
+    return analysis_module.MLProcessor(default_model="enhanced_cnn_lstm")
 
 
 class TestMLProcessor:
