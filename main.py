@@ -15,6 +15,7 @@ from src.api.voice import router as voice_router
 from src.api.analysis import router as analysis_router
 from src.api.system import router as system_router
 from src.api.model import router as model_mgmt_router
+from src.api.reports import router as reports_router
 from src.config.settings import get_allowed_origins, validate_runtime_environment
 from src.security.auth import require_auth
 
@@ -86,6 +87,7 @@ async def openapi_redirect():
 app.include_router(system_router, prefix=API_PREFIX, tags=["System"])
 app.include_router(analysis_router, prefix=f"{API_PREFIX}/eeg", tags=["EEG"], dependencies=[Depends(require_auth)])
 app.include_router(training_router, prefix=f"{API_PREFIX}/training", tags=["Training"], dependencies=[Depends(require_auth)])
+app.include_router(reports_router, prefix=f"{API_PREFIX}/reports", tags=["Reports"], dependencies=[Depends(require_auth)])
 app.include_router(voice_router, prefix=f"{API_PREFIX}/voice", tags=["Voice"], dependencies=[Depends(require_auth)])
 app.include_router(model_mgmt_router, prefix=f"{API_PREFIX}/models", tags=["Models"], dependencies=[Depends(require_auth)])
 
@@ -96,6 +98,7 @@ if STREAMING_AVAILABLE:
 app.include_router(system_router, include_in_schema=False)
 app.include_router(analysis_router, include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(training_router, prefix="/api/training", include_in_schema=False, dependencies=[Depends(require_auth)])
+app.include_router(reports_router, prefix="/api/reports", include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(voice_router, prefix="/api/voice", include_in_schema=False, dependencies=[Depends(require_auth)])
 app.include_router(model_mgmt_router, prefix="/api/model", include_in_schema=False, dependencies=[Depends(require_auth)])
 if STREAMING_AVAILABLE:
