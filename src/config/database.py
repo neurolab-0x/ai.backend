@@ -29,7 +29,7 @@ MINIO_CONFIG = {
     'buckets': {
         'training': 'training-artifacts',
         'models': 'models',
-        'datasets': 'datasets'
+        'datasets': 'datasets',
+        'reports': 'reports'
     }
 }
-

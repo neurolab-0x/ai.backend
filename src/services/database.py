@@ -242,6 +242,109 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error retrieving data range from InfluxDB: {e}")
             return []
+
+    async def get_session_summaries(
+        self,
+        *,
+        subject_id: str,
+        session_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve persisted session summaries for a user within an optional time window."""
+        if not self.enabled or self.db is None:
+            return []
+
+        try:
+            query: Dict[str, Any] = {"subject_id": validate_safe_id(subject_id, "subject_id")}
+            if session_id:
+                query["session_id"] = validate_safe_id(session_id, "session_id")
+            if start_time or end_time:
+                time_query: Dict[str, Any] = {}
+                if start_time:
+                    time_query["$gte"] = start_time
+                if end_time:
+                    time_query["$lte"] = end_time
+                query["timestamp"] = time_query
+
+            rows: List[Dict[str, Any]] = []
+            cursor = self.db.sessions.find(query).sort("timestamp", -1).limit(limit)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                rows.append(doc)
+            return rows
+        except Exception as e:
+            logger.error(f"Error fetching session summaries for {subject_id}: {e}")
+            return []
+
+    async def get_chat_exchanges(
+        self,
+        *,
+        subject_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve persisted chat exchanges for a user within an optional time window."""
+        if not self.enabled or self.db is None:
+            return []
+
+        try:
+            query: Dict[str, Any] = {"subject_id": validate_safe_id(subject_id, "subject_id")}
+            if start_time or end_time:
+                time_query: Dict[str, Any] = {}
+                if start_time:
+                    time_query["$gte"] = start_time
+                if end_time:
+                    time_query["$lte"] = end_time
+                query["timestamp"] = time_query
+
+            rows: List[Dict[str, Any]] = []
+            cursor = self.db.chat_exchanges.find(query).sort("timestamp", -1).limit(limit)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                rows.append(doc)
+            return rows
+        except Exception as e:
+            logger.error(f"Error fetching chat exchanges for {subject_id}: {e}")
+            return []
+
+    async def get_training_runs_for_subject(
+        self,
+        *,
+        subject_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve completed training runs for a user within an optional time window."""
+        if not self.enabled or self.db is None:
+            return []
+
+        try:
+            query: Dict[str, Any] = {
+                "subject_id": validate_safe_id(subject_id, "subject_id"),
+                "status": "completed",
+                "archived": {"$ne": True},
+            }
+            if start_time or end_time:
+                time_query: Dict[str, Any] = {}
+                if start_time:
+                    time_query["$gte"] = start_time
+                if end_time:
+                    time_query["$lte"] = end_time
+                query["created_at"] = time_query
+
+            rows: List[Dict[str, Any]] = []
+            cursor = self.db.training_runs.find(query).sort("created_at", -1).limit(limit)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                rows.append(doc)
+            return rows
+        except Exception as e:
+            logger.error(f"Error fetching training runs for {subject_id}: {e}")
+            return []
             
     async def store_model_version(self, model_data: Dict[str, Any]) -> str:
         """Store model metadata in MongoDB"""
@@ -352,6 +455,106 @@ class DatabaseService:
             return result.matched_count > 0
         except Exception as e:
             logger.error(f"Error archiving training run {job_id}: {e}")
+            return False
+
+    async def create_report_run(self, run_data: Dict[str, Any]) -> Optional[str]:
+        """Create a persisted report run record in MongoDB."""
+        if not self.enabled or self.db is None:
+            return None
+
+        try:
+            run_data = dict(run_data)
+            run_data["job_id"] = validate_safe_id(run_data["job_id"], "job_id")
+            run_data["subject_id"] = validate_safe_id(run_data["subject_id"], "subject_id")
+            if run_data.get("session_id"):
+                run_data["session_id"] = validate_safe_id(run_data["session_id"], "session_id")
+            run_data.setdefault("created_at", datetime.now())
+            run_data.setdefault("updated_at", run_data["created_at"])
+            run_data.setdefault("archived", False)
+            run_data.setdefault("archived_at", None)
+            result = await self.db.report_runs.insert_one(run_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Error creating report run: {e}")
+            return None
+
+    async def update_report_run(self, job_id: str, updates: Dict[str, Any]) -> bool:
+        """Update a persisted report run by job_id."""
+        if not self.enabled or self.db is None:
+            return False
+
+        try:
+            job_id = validate_safe_id(job_id, "job_id")
+            updates = dict(updates)
+            updates["updated_at"] = datetime.now()
+            result = await self.db.report_runs.update_one(
+                {"job_id": job_id},
+                {"$set": updates},
+                upsert=False,
+            )
+            return result.matched_count > 0
+        except Exception as e:
+            logger.error(f"Error updating report run {job_id}: {e}")
+            return False
+
+    async def get_report_run(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a persisted report run by job_id."""
+        if not self.enabled or self.db is None:
+            return None
+
+        try:
+            job_id = validate_safe_id(job_id, "job_id")
+            doc = await self.db.report_runs.find_one({"job_id": job_id})
+            if not doc:
+                return None
+            doc["_id"] = str(doc["_id"])
+            return doc
+        except Exception as e:
+            logger.error(f"Error fetching report run {job_id}: {e}")
+            return None
+
+    async def list_report_runs(self, limit: int = 20, include_archived: bool = False) -> List[Dict[str, Any]]:
+        """List persisted report runs newest first."""
+        if not self.enabled or self.db is None:
+            return []
+
+        try:
+            query: Dict[str, Any] = {}
+            if not include_archived:
+                query["archived"] = {"$ne": True}
+            rows: List[Dict[str, Any]] = []
+            cursor = self.db.report_runs.find(query).sort("created_at", -1).limit(limit)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                rows.append(doc)
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing report runs: {e}")
+            return []
+
+    async def archive_report_run(self, job_id: str, reason: str = "archived_by_user") -> bool:
+        """Archive a persisted report run by job_id."""
+        if not self.enabled or self.db is None:
+            return False
+
+        try:
+            job_id = validate_safe_id(job_id, "job_id")
+            result = await self.db.report_runs.update_one(
+                {"job_id": job_id},
+                {
+                    "$set": {
+                        "archived": True,
+                        "archived_at": datetime.now(),
+                        "archival_reason": reason,
+                        "status": "archived",
+                        "updated_at": datetime.now(),
+                    }
+                },
+                upsert=False,
+            )
+            return result.matched_count > 0
+        except Exception as e:
+            logger.error(f"Error archiving report run {job_id}: {e}")
             return False
             
     async def close(self):
