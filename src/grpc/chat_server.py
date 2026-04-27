@@ -22,10 +22,18 @@ def _dumps(payload: Dict[str, Any]) -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
-async def _send_message(request: Dict[str, Any], _context) -> Dict[str, Any]:
+def _extract_authorization(context) -> str | None:
+    for item in context.invocation_metadata():
+        if item.key.lower() == "authorization":
+            return item.value
+    return None
+
+
+async def _send_message(request: Dict[str, Any], context) -> Dict[str, Any]:
     return await generate_chat_exchange(
         message=str(request.get("message", "")).strip(),
         subject_id=request.get("subject_id"),
+        auth_token=_extract_authorization(context),
         history=request.get("history"),
         current_title=request.get("current_title"),
         include_health_data=bool(request.get("include_health_data", True)),
