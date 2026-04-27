@@ -132,7 +132,7 @@ async def test_ml_processor_integration(monkeypatch):
     )
     monkeypatch.setattr(analysis_module, "safe_enqueue", lambda *args, **kwargs: None)
 
-    processor = MLProcessor(default_model="enhanced_cnn_lstm")
+    processor = analysis_module.MLProcessor(default_model="enhanced_cnn_lstm")
     result = await processor.process_eeg_data(
         {
             "alpha": 8.5,
