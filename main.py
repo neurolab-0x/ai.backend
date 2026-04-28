@@ -19,6 +19,7 @@ from src.api.model import router as model_mgmt_router
 from src.api.reports import router as reports_router
 from src.config.settings import get_allowed_origins, validate_runtime_environment
 from src.security.auth import require_auth
+from src.startup_checks import validate_startup_dependencies
 
 configure_logging()
 validate_runtime_environment()
@@ -36,6 +37,7 @@ except ImportError:
 async def lifespan(app: FastAPI):
     """Lifespan management for the application"""
     logger.info("Application starting up")
+    await validate_startup_dependencies()
     grpc_server = None
     if os.getenv("ENABLE_CHAT_GRPC", "false").lower() == "true":
         try:
