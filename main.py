@@ -20,6 +20,7 @@ from src.api.reports import router as reports_router
 from src.config.settings import get_allowed_origins, validate_runtime_environment
 from src.security.auth import require_auth
 from src.startup_checks import validate_startup_dependencies
+from src.worker import start_managed_worker_process
 
 configure_logging()
 validate_runtime_environment()
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
     logger.info("Application starting up")
     await validate_startup_dependencies()
     grpc_server = None
+    managed_worker = None
     if os.getenv("ENABLE_CHAT_GRPC", "false").lower() == "true":
         try:
             from src.grpc.chat_server import create_chat_grpc_server
@@ -51,7 +53,17 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning(f"Failed to start chat gRPC server: {exc}")
 
+    if os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").lower() == "true":
+        try:
+            managed_worker = start_managed_worker_process()
+            logger.info("Managed RQ worker process started pid=%s", managed_worker.process.pid)
+        except Exception as exc:
+            logger.error(f"Failed to start managed RQ worker process: {exc}")
+            raise
+
     yield
+    if managed_worker is not None:
+        managed_worker.stop()
     if grpc_server is not None:
         await grpc_server.stop(grace=5)
     logger.info("Application shutdown initiated")
