@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request, status
@@ -34,9 +35,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TERMINAL_CHAT_EVENTS = {"completed", "failed"}
+TERMINAL_RQ_STATUSES = {"finished", "failed", "stopped", "canceled"}
 MAX_CHAT_MESSAGE_CHARS = 8000
 MAX_CHAT_HISTORY_ITEMS = 20
 MAX_CHAT_HISTORY_ITEM_CHARS = 4000
+CHAT_STALLED_SECONDS = 30
+CHAT_RQ_STATUS_POLL_SECONDS = 5
 
 
 def require_rq() -> None:
@@ -45,6 +49,49 @@ def require_rq() -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Chat queue is unavailable because RQ is not installed.",
         )
+
+
+def _get_rq_job_details(job_id: str) -> Dict[str, Any]:
+    if not RQ_AVAILABLE:
+        return {
+            "status": None,
+            "error": None,
+            "queue": None,
+            "enqueued_at": None,
+            "started_at": None,
+            "ended_at": None,
+        }
+
+    try:
+        queue = get_queue("chat")
+        job = Job.fetch(job_id, connection=queue.connection)
+        return {
+            "status": job.get_status(refresh=True),
+            "error": job.exc_info,
+            "queue": job.origin,
+            "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        }
+    except NoSuchJobError:
+        return {
+            "status": None,
+            "error": None,
+            "queue": None,
+            "enqueued_at": None,
+            "started_at": None,
+            "ended_at": None,
+        }
+    except Exception as exc:
+        logger.warning("Failed to inspect RQ job %s: %s", job_id, exc)
+        return {
+            "status": None,
+            "error": str(exc),
+            "queue": None,
+            "enqueued_at": None,
+            "started_at": None,
+            "ended_at": None,
+        }
 
 
 class ChatJobRequest(BaseModel):
@@ -142,6 +189,14 @@ async def submit_chat_job(data: ChatJobRequest, request: Request):
             job_timeout=60 * 10,
             result_ttl=60 * 60 * 24,
         )
+        logger.info(
+            "Queued chat job job_id=%s queue=%s conversation_id=%s subject_id=%s queue_size=%s",
+            job.id,
+            q.name,
+            data.conversation_id,
+            data.subject_id,
+            len(q.job_ids),
+        )
         track_job("chat", job.id)
         initial_event = publish_job_event(
             "chat",
@@ -172,24 +227,32 @@ async def get_chat_job_status(job_id: str):
     """Return the latest known state for a background chat job."""
     job_id = require_safe_id_or_400(job_id, "job_id")
     state = read_job_state("chat", job_id)
-    rq_status = None
-    if RQ_AVAILABLE:
-        try:
-            job = Job.fetch(job_id, connection=get_queue("chat").connection)
-            rq_status = job.get_status(refresh=True)
-        except NoSuchJobError:
-            rq_status = None
-        except Exception as exc:
-            logger.warning(f"Failed to read RQ status for chat job {job_id}: {exc}")
+    rq_details = _get_rq_job_details(job_id)
+    rq_status = rq_details["status"]
 
     if state is None and rq_status is None:
         raise HTTPException(status_code=404, detail=f"Chat job {job_id} not found")
+
+    if state is None:
+        logger.warning(
+            "Chat job has no published state yet job_id=%s rq_status=%s queue=%s",
+            job_id,
+            rq_status,
+            rq_details["queue"],
+        )
+    if rq_status == "failed":
+        logger.error(
+            "Chat job failed in RQ job_id=%s error=%s",
+            job_id,
+            rq_details["error"],
+        )
 
     return {
         "job_id": job_id,
         "status": (state or {}).get("event") or rq_status,
         "rq_status": rq_status,
         "state": state,
+        "rq_details": rq_details,
     }
 
 
@@ -205,16 +268,45 @@ async def stream_chat_job_events(
         redis = get_async_redis()
         pubsub = redis.pubsub()
         channel = f"neurolab:job:events:chat:{job_id}"
+        last_status_poll = 0.0
+        last_non_ping_event_at = time.monotonic()
+        last_rq_status = None
+        stalled_emitted = False
         try:
+            logger.info("Opening chat SSE stream job_id=%s channel=%s", job_id, channel)
             await pubsub.subscribe(channel)
             state = read_job_state("chat", job_id)
-            yield f"event: ready\ndata: {json.dumps({'job_id': job_id, 'state': state}, default=str)}\n\n".encode("utf-8")
+            rq_details = _get_rq_job_details(job_id)
+            last_rq_status = rq_details["status"]
+            initial_payload = {
+                "job_id": job_id,
+                "state": state,
+                "rq_status": rq_details["status"],
+                "rq_details": rq_details,
+            }
+            logger.info(
+                "Chat SSE initial state job_id=%s rq_status=%s has_state=%s",
+                job_id,
+                rq_details["status"],
+                bool(state),
+            )
+            yield f"event: ready\ndata: {json.dumps(initial_payload, default=str)}\n\n".encode("utf-8")
             if state and state.get("event") in TERMINAL_CHAT_EVENTS:
                 yield f"event: {state['event']}\ndata: {json.dumps(state, default=str)}\n\n".encode("utf-8")
+                return
+            if rq_details["status"] == "failed":
+                failed_payload = {
+                    "job_id": job_id,
+                    "error": rq_details["error"] or "RQ job failed before publishing state",
+                    "rq_status": rq_details["status"],
+                }
+                logger.error("Chat SSE immediate failure job_id=%s error=%s", job_id, failed_payload["error"])
+                yield f"event: failed\ndata: {json.dumps(failed_payload, default=str)}\n\n".encode("utf-8")
                 return
 
             while True:
                 if await request.is_disconnected():
+                    logger.info("Chat SSE client disconnected job_id=%s", job_id)
                     break
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
                 if message and message.get("data"):
@@ -223,10 +315,60 @@ async def stream_chat_job_events(
                         data = data.decode("utf-8")
                     payload = json.loads(data)
                     event_name = payload.get("event", "message")
+                    last_non_ping_event_at = time.monotonic()
+                    stalled_emitted = False
+                    logger.info("Chat SSE event job_id=%s event=%s", job_id, event_name)
                     yield f"event: {event_name}\ndata: {json.dumps(payload, default=str)}\n\n".encode("utf-8")
                     if event_name in TERMINAL_CHAT_EVENTS:
                         break
                 else:
+                    now = time.monotonic()
+                    if now - last_status_poll >= CHAT_RQ_STATUS_POLL_SECONDS:
+                        last_status_poll = now
+                        rq_details = _get_rq_job_details(job_id)
+                        rq_status = rq_details["status"]
+                        if rq_status != last_rq_status:
+                            last_rq_status = rq_status
+                            logger.info(
+                                "Chat SSE RQ status update job_id=%s rq_status=%s",
+                                job_id,
+                                rq_status,
+                            )
+                            rq_payload = {
+                                "job_id": job_id,
+                                "rq_status": rq_status,
+                                "rq_details": rq_details,
+                            }
+                            yield f"event: rq_status\ndata: {json.dumps(rq_payload, default=str)}\n\n".encode("utf-8")
+                        if rq_status == "failed":
+                            failed_payload = {
+                                "job_id": job_id,
+                                "error": rq_details["error"] or "RQ job failed before publishing terminal state",
+                                "rq_status": rq_status,
+                            }
+                            logger.error("Chat SSE detected RQ failure job_id=%s error=%s", job_id, failed_payload["error"])
+                            yield f"event: failed\ndata: {json.dumps(failed_payload, default=str)}\n\n".encode("utf-8")
+                            break
+                        if (
+                            not stalled_emitted
+                            and now - last_non_ping_event_at >= CHAT_STALLED_SECONDS
+                            and rq_status not in TERMINAL_RQ_STATUSES
+                        ):
+                            stalled_emitted = True
+                            stalled_payload = {
+                                "job_id": job_id,
+                                "message": "Chat job has not emitted progress updates recently",
+                                "rq_status": rq_status,
+                                "rq_details": rq_details,
+                                "stalled_seconds": CHAT_STALLED_SECONDS,
+                            }
+                            logger.warning(
+                                "Chat SSE stalled job_id=%s rq_status=%s stalled_seconds=%s",
+                                job_id,
+                                rq_status,
+                                CHAT_STALLED_SECONDS,
+                            )
+                            yield f"event: stalled\ndata: {json.dumps(stalled_payload, default=str)}\n\n".encode("utf-8")
                     yield b"event: ping\ndata: {}\n\n"
                 await asyncio.sleep(0.05)
         finally:
@@ -236,6 +378,7 @@ async def stream_chat_job_events(
                 logger.debug("Chat SSE unsubscribe failed for job %s", job_id)
             await pubsub.close()
             await redis.close()
+            logger.info("Closed chat SSE stream job_id=%s", job_id)
 
     return StarletteStreamingResponse(event_gen(), media_type="text/event-stream")
 
