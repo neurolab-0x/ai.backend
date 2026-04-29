@@ -3,7 +3,6 @@ import logging
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Optional
 
 try:
     from rq import Worker
