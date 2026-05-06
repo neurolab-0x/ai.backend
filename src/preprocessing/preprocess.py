@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif, RFE
@@ -169,7 +169,11 @@ def split_data(df: pd.DataFrame, target_column: str = 'eeg_state',
                stratify: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Enhanced data splitting with validation"""
     try:
-        X = df.drop(columns=[target_column])
+        drop_columns = [target_column]
+        for alias in ('state', 'label'):
+            if alias in df.columns and alias != target_column:
+                drop_columns.append(alias)
+        X = df.drop(columns=drop_columns)
         y = df[target_column]
         
         if stratify:
@@ -182,8 +186,9 @@ def split_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         raise PreprocessingError(f"Error in data splitting: {str(e)}")
 
 def augment_data(X: np.ndarray, y: np.ndarray, noise_level: float = 0.05, 
-                shift_max: int = 5, num_augmented_samples: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """Enhanced data augmentation with parallel processing"""
+                shift_max: int = 5, num_augmented_samples: Optional[int] = None,
+                preserve_feature_positions: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+    """Enhanced data augmentation with optional tabular-safe behavior."""
     if num_augmented_samples is None:
         num_augmented_samples = X.shape[0] // 4
     
@@ -194,23 +199,22 @@ def augment_data(X: np.ndarray, y: np.ndarray, noise_level: float = 0.05,
         noise = np.random.normal(0, noise_level, x.shape)
         x_noise = x + noise
         
-        # Apply time shift
-        shift = np.random.randint(-shift_max, shift_max + 1)
-        if shift != 0:
-            x_shift = np.roll(x, shift)
-            if shift > 0:
-                # Clamp shift if it exceeds array length
-                s = min(shift, len(x) - 1)
-                x_shift[:s] = x_shift[s]
-            else:
-                # Clamp shift if it exceeds array length
-                s = max(shift, -len(x) + 1)
-                x_shift[s:] = x_shift[s-1]
+        if preserve_feature_positions:
+            x_augmented = x_noise
         else:
-            x_shift = x
-        
-        # Combine transformations with reduced noise
-        x_augmented = x_shift + (noise * 0.5)
+            # Apply time shift only when samples represent ordered temporal windows.
+            shift = np.random.randint(-shift_max, shift_max + 1)
+            if shift != 0:
+                x_shift = np.roll(x, shift)
+                if shift > 0:
+                    s = min(shift, len(x) - 1)
+                    x_shift[:s] = x_shift[s]
+                else:
+                    s = max(shift, -len(x) + 1)
+                    x_shift[s:] = x_shift[s-1]
+            else:
+                x_shift = x
+            x_augmented = x_shift + (noise * 0.5)
         return x_augmented, y[idx]
     
     # Use parallel processing for augmentation
@@ -296,6 +300,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
             'signal_quality': {},
             'validation_results': {},
             'feature_names': [],
+            'data_mode': None,
         }
         
         # Create cache directory if specified
@@ -334,6 +339,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         
         if is_raw_data:
             logger.info("Extracting features from raw data...")
+            metadata['data_mode'] = 'raw_timeseries'
             
             if cache_dir and (cache_path / 'features.pkl').exists():
                 logger.info("Loading cached features...")
@@ -353,6 +359,7 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         else:
             logger.info("Using provided feature dataframe...")
             df_features = df.copy()
+            metadata['data_mode'] = 'precomputed_features'
         
         logger.info(f"Feature extraction complete. Shape: {df_features.shape}")
         metadata['preprocessing_steps'].append('feature_extraction')
@@ -417,11 +424,20 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         metadata['scaler'] = scaler
         metadata['preprocessing_steps'].append('feature_scaling')
         
-        # Augment training data
-        logger.info("Augmenting training data...")
-        X_train, y_train = augment_data(X_train, y_train)
-        logger.info(f"After augmentation - Training set: {X_train.shape}")
-        metadata['preprocessing_steps'].append('data_augmentation')
+        preserve_feature_positions = bool(
+            metadata['data_mode'] == 'precomputed_features' or X_train.shape[1] <= 16
+        )
+        if preserve_feature_positions:
+            logger.info("Skipping structural augmentation for tabular/precomputed features")
+        else:
+            logger.info("Augmenting training data...")
+            X_train, y_train = augment_data(
+                X_train,
+                y_train,
+                preserve_feature_positions=False,
+            )
+            logger.info(f"After augmentation - Training set: {X_train.shape}")
+            metadata['preprocessing_steps'].append('data_augmentation')
         
         # Balance classes
         if balance_method:
@@ -465,10 +481,10 @@ def preprocess_data(df: pd.DataFrame, target_column: str = 'eeg_state',
         
         # Perform cross-validation
         logger.info(f"Performing {n_splits}-fold cross-validation...")
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
         cv_scores = []
         
-        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train, y_train)):
             X_fold_train, X_fold_val = X_train[train_idx], X_train[val_idx]
             y_fold_train, y_fold_val = y_train[train_idx], y_train[val_idx]
             

@@ -219,6 +219,17 @@ def attention_lstm_layer(x, units, dropout_rate=0.3):
     
     return context
 
+
+def _should_use_tabular_backbone(input_shape, kwargs) -> bool:
+    force_tabular = kwargs.get("force_tabular_backbone")
+    if force_tabular is not None:
+        return bool(force_tabular)
+    if not input_shape:
+        return False
+    feature_count = int(input_shape[0]) if len(input_shape) >= 1 else 0
+    channel_count = int(input_shape[1]) if len(input_shape) >= 2 else 1
+    return feature_count <= 16 and channel_count == 1
+
 def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=3, **kwargs):
     """Build model architecture without training."""
     _require_tensorflow()
@@ -229,6 +240,28 @@ def build_model(model_type='enhanced_cnn_lstm', input_shape=(5, 1), num_classes=
     l2_reg = kwargs.get('l2_reg', 1e-4)
 
     inputs = Input(shape=input_shape)
+    if _should_use_tabular_backbone(input_shape, kwargs):
+        x = Flatten()(inputs)
+        x = GaussianNoise(0.01)(x)
+        x = Dense(
+            128,
+            activation='relu',
+            kernel_regularizer=l1_l2(l1=l1_reg, l2=l2_reg),
+        )(x)
+        x = BatchNormalization()(x)
+        x = Dropout(dropout_rate)(x)
+        x = Dense(
+            64,
+            activation='relu',
+            kernel_regularizer=l1_l2(l1=l1_reg, l2=l2_reg),
+        )(x)
+        x = BatchNormalization()(x)
+        x = Dropout(dropout_rate)(x)
+        outputs = Dense(num_classes, activation='softmax')(x)
+        model = Model(inputs=inputs, outputs=outputs)
+        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        return model
+
     x = GaussianNoise(0.01)(inputs)
     
     if model_type == 'original':
