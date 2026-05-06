@@ -25,7 +25,15 @@ from src.preprocessing.load_data import load_data
 from src.preprocessing.features import extract_features
 from src.preprocessing.preprocess import preprocess_data
 from src.preprocessing.labeling import label_eeg_states
-from src.core.ml.model import build_model, train_hybrid_model, evaluate_model
+from src.core.ml.model import (
+    DEFAULT_FEATURE_NAMES,
+    build_model,
+    evaluate_model,
+    get_model_artifact_paths,
+    save_model_metadata,
+    save_scaler_artifact,
+)
+from src.services.storage import MinioStorageService
 
 def setup_logging(log_file: str = 'training_improved.log'):
     logging.basicConfig(
@@ -59,7 +67,7 @@ class ImprovedModelTrainer:
         return [
             callbacks.EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True, verbose=1),
             callbacks.ModelCheckpoint(
-                filepath=os.path.join(self.checkpoint_dir, f'{model_type}_best.h5'),
+                filepath=os.path.join(self.checkpoint_dir, f'{model_type}_best.keras'),
                 monitor='val_accuracy', save_best_only=True, verbose=1
             ),
             callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1),
@@ -73,20 +81,25 @@ class ImprovedModelTrainer:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        args: argparse.Namespace
+        args: argparse.Namespace,
+        preprocessing_metadata: Optional[Dict[str, Any]] = None,
     ) -> keras.Model:
         logger.info(f"Starting training for {args.model_type}")
         
         input_shape = (X_train.shape[1], X_train.shape[2]) if len(X_train.shape) > 2 else (X_train.shape[1], 1)
         num_classes = len(np.unique(y_train))
         
-        save_path = os.path.join("model", f"{args.model_type}.h5")
+        artifact_paths = get_model_artifact_paths(args.model_type, base_dir="model")
+        save_path = artifact_paths["model_path"]
+        legacy_save_path = artifact_paths["legacy_model_path"]
         
         # Load existing model if resume is requested or if model exists
-        if args.resume and os.path.exists(save_path):
-            logger.info(f"Resuming training: Loading existing model from {save_path}")
+        resume_candidates = [save_path, legacy_save_path]
+        existing_model_path = next((path for path in resume_candidates if os.path.exists(path)), None)
+        if args.resume and existing_model_path:
+            logger.info(f"Resuming training: Loading existing model from {existing_model_path}")
             try:
-                self.model = keras.models.load_model(save_path)
+                self.model = keras.models.load_model(existing_model_path)
                 # Recompile to ensure correct optimizer and loss (prevents potential issues)
                 self.model.compile(
                     optimizer='adam', 
@@ -128,9 +141,76 @@ class ImprovedModelTrainer:
             verbose=1
         )
         
-        os.makedirs("model", exist_ok=True)
+        os.makedirs(artifact_paths["artifact_dir"], exist_ok=True)
         self.model.save(save_path)
         logger.info(f"Model saved to {save_path}")
+
+        feature_names = (
+            (preprocessing_metadata or {}).get("feature_names")
+            or DEFAULT_FEATURE_NAMES
+        )
+        scaler = (preprocessing_metadata or {}).get("scaler")
+        if scaler is None:
+            raise RuntimeError(
+                "Preprocessing scaler missing from training metadata; cannot export inference artifacts"
+            )
+
+        save_scaler_artifact(args.model_type, scaler, base_dir="model")
+        metadata_payload = {
+            "input_features": feature_names,
+            "scaler": scaler.__class__.__name__,
+            "model_type": args.model_type,
+            "trained_at": datetime.now().isoformat(),
+            "source": "standalone_training_script",
+            "dataset_path": args.data,
+            "validation_split": args.val_split,
+            "simple_mode": args.simple_mode,
+            "overlap": args.overlap,
+            "training_config": {
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "patience": args.patience,
+                "dropout": args.dropout,
+                "l1": args.l1,
+                "l2": args.l2,
+                "seed": args.seed,
+            },
+        }
+        if preprocessing_metadata:
+            metadata_payload["dataset_metadata"] = {
+                key: value
+                for key, value in preprocessing_metadata.items()
+                if key != "scaler"
+            }
+        save_model_metadata(args.model_type, metadata_payload, base_dir="model")
+        logger.info("Saved scaler and metadata artifacts for %s", args.model_type)
+
+        storage = MinioStorageService()
+        if storage.enabled:
+            uploads = {
+                "model": storage.upload_file(
+                    artifact_paths["model_path"],
+                    "models",
+                    f"active/{args.model_type}/model.keras",
+                ),
+                "scaler": storage.upload_file(
+                    artifact_paths["scaler_path"],
+                    "models",
+                    f"active/{args.model_type}/scaler.joblib",
+                ),
+                "metadata": storage.upload_file(
+                    artifact_paths["metadata_path"],
+                    "models",
+                    f"active/{args.model_type}/metadata.json",
+                ),
+            }
+            if all(uploads.values()):
+                logger.info("Uploaded active model artifacts to MinIO for %s", args.model_type)
+            else:
+                logger.warning(
+                    "Failed to upload one or more active artifacts to MinIO for %s",
+                    args.model_type,
+                )
         
         self.training_config = vars(args)
         self.training_config['timestamp'] = datetime.now().isoformat()
@@ -275,7 +355,14 @@ def main():
         )
         
         trainer = ImprovedModelTrainer()
-        trainer.train(X_train_final, y_train_final, X_val, y_val, args)
+        trainer.train(
+            X_train_final,
+            y_train_final,
+            X_val,
+            y_val,
+            args,
+            preprocessing_metadata=metadata,
+        )
         
         results = trainer.evaluate(X_test, y_test)
         trainer.plot_results(results)
