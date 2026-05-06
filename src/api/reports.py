@@ -58,6 +58,10 @@ class ReportJobRequest(BaseModel):
     include_training: bool = Field(default=True)
     include_chat: bool = Field(default=True)
     context_limit: int = Field(default=20, ge=1, le=100)
+    external_context: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional backend-supplied user/analysis context to enrich the report",
+    )
 
     @validator("subject_id")
     def validate_subject_id(cls, value: str) -> str:

@@ -42,6 +42,7 @@ async def collect_report_context(
     include_training: bool = True,
     include_chat: bool = True,
     limit: int = 20,
+    external_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     end = end_time or datetime.now()
     start = start_time or (end - timedelta(days=max(1, lookback_days)))
@@ -54,7 +55,17 @@ async def collect_report_context(
         "sessions": [],
         "training_runs": [],
         "chat_exchanges": [],
+        "external_subject_profile": {},
+        "external_analysis_history": [],
     }
+
+    if isinstance(external_context, dict):
+        subject_profile = external_context.get("subject_profile")
+        analysis_history = external_context.get("analysis_history")
+        if isinstance(subject_profile, dict):
+            context["external_subject_profile"] = subject_profile
+        if isinstance(analysis_history, list):
+            context["external_analysis_history"] = analysis_history[:limit]
 
     if include_sessions:
         context["sessions"] = await db_service.get_session_summaries(
@@ -104,6 +115,7 @@ def build_report_summary(context: Dict[str, Any]) -> Dict[str, Any]:
         "session_count": len(sessions),
         "training_run_count": len(training_runs),
         "chat_exchange_count": len(chat_exchanges),
+        "external_analysis_count": len(context.get("external_analysis_history", [])),
         "average_session_confidence": (
             round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else None
         ),
@@ -149,6 +161,41 @@ def _format_chat_exchanges(chat_exchanges: List[Dict[str, Any]]) -> str:
         message = str(item.get("message", "")).strip().replace("\n", " ")
         response = str(item.get("response", "")).strip().replace("\n", " ")
         lines.append(f"- {ts}: user='{message[:120]}' assistant='{response[:160]}'")
+    return "\n".join(lines)
+
+
+def _format_external_subject_profile(subject_profile: Dict[str, Any]) -> str:
+    if not subject_profile:
+        return "No backend subject profile supplied."
+
+    lines = []
+    for key, label in (
+        ("full_name", "Full name"),
+        ("username", "Username"),
+        ("email", "Email"),
+        ("phone", "Phone"),
+        ("role", "Role"),
+        ("address", "Address"),
+        ("member_since", "Member since"),
+    ):
+        value = subject_profile.get(key)
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines) if lines else "No backend subject profile supplied."
+
+
+def _format_external_analysis_history(analysis_history: List[Dict[str, Any]]) -> str:
+    if not analysis_history:
+        return "No backend analysis history supplied."
+
+    lines = []
+    for item in analysis_history[:20]:
+        timestamp = item.get("timestamp")
+        ts = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+        lines.append(
+            f"- {ts}: analysis={item.get('id')} status={item.get('status')} "
+            f"notes={item.get('ai_notes') or 'none'} results={item.get('results') or {}}"
+        )
     return "\n".join(lines)
 
 
@@ -208,6 +255,12 @@ Training runs:
 Chat exchanges:
 {_format_chat_exchanges(context.get("chat_exchanges", []))}
 
+Backend subject profile:
+{_format_external_subject_profile(context.get("external_subject_profile", {}))}
+
+Backend analysis history:
+{_format_external_analysis_history(context.get("external_analysis_history", []))}
+
 Return JSON with this shape:
 {{
   "title": "string",
@@ -253,6 +306,7 @@ def build_report_document(
             "sessions": len(context.get("sessions", [])),
             "training_runs": len(context.get("training_runs", [])),
             "chat_exchanges": len(context.get("chat_exchanges", [])),
+            "external_analyses": len(context.get("external_analysis_history", [])),
         },
         "medical_disclaimer": REPORT_DISCLAIMER,
         "generated_at": datetime.now().isoformat(),
