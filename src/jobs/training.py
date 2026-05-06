@@ -501,17 +501,31 @@ def train_from_npz(
         _set_meta(0.97, "Promoting active model artifacts...")
         _update_run(job_id, "promoting_model", 0.97, "Promoting active model artifacts...", artifacts=artifacts)
         _publish(job_id, "promoting_model", {"progress": 0.97, "model_type": model_type})
-        promoted_paths = promote_model_artifacts(model_type, run_paths["artifact_base_dir"], target_base_dir="model")
-        artifacts["promotion"] = {
+
+        active_paths = run_model_paths
+        promotion_payload = {
             "promoted_at": datetime.now().isoformat(),
             "model_type": model_type,
-            "active_artifact_dir": promoted_paths["artifact_dir"],
+            "active_storage": "minio" if storage_service.enabled else "local",
+            "active_artifact_dir": (
+                f"models/active/{model_type}" if storage_service.enabled else active_paths["artifact_dir"]
+            ),
         }
+        if not storage_service.enabled:
+            promoted_paths = promote_model_artifacts(
+                model_type,
+                run_paths["artifact_base_dir"],
+                target_base_dir="model",
+            )
+            active_paths = promoted_paths
+            promotion_payload["active_artifact_dir"] = promoted_paths["artifact_dir"]
+
+        artifacts["promotion"] = promotion_payload
         _register_object_artifact(
             storage_service,
             artifacts,
             key="active_model",
-            local_path=promoted_paths["model_path"],
+            local_path=active_paths["model_path"],
             bucket_key="models",
             object_name=f"active/{model_type}/model.keras",
             label="Active model artifact",
@@ -523,7 +537,7 @@ def train_from_npz(
             storage_service,
             artifacts,
             key="active_scaler",
-            local_path=promoted_paths["scaler_path"],
+            local_path=active_paths["scaler_path"],
             bucket_key="models",
             object_name=f"active/{model_type}/scaler.joblib",
             label="Active scaler artifact",
@@ -535,7 +549,7 @@ def train_from_npz(
             storage_service,
             artifacts,
             key="active_metadata",
-            local_path=promoted_paths["metadata_path"],
+            local_path=active_paths["metadata_path"],
             bucket_key="models",
             object_name=f"active/{model_type}/metadata.json",
             label="Active metadata artifact",
