@@ -31,8 +31,21 @@ def label_eeg_states(df, method='auto', threshold_params=None):
     # Make a copy of the dataframe to avoid modifying the original
     df_out = df.copy()
     
+    # Preserve ground-truth labels when they already exist.
+    if 'eeg_state' in df.columns:
+        logger.info("Using existing 'eeg_state' labels from dataset")
+        return df_out
+    if 'state' in df.columns:
+        logger.info("Using existing 'state' column as ground-truth EEG labels")
+        df_out['eeg_state'] = df_out['state']
+        return df_out
+    if 'label' in df.columns:
+        logger.info("Using existing 'label' column as ground-truth EEG labels")
+        df_out['eeg_state'] = df_out['label']
+        return df_out
+
     # Extract only EEG data columns (exclude any existing labels)
-    eeg_cols = [col for col in df.columns if col != 'eeg_state']
+    eeg_cols = [col for col in df.columns if col not in {'eeg_state', 'state', 'label'}]
     
     # Default threshold parameters
     default_threshold = {

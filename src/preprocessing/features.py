@@ -13,6 +13,7 @@ import pywt
 from sklearn.decomposition import PCA
 
 logger = logging.getLogger(__name__)
+CANONICAL_BAND_COLUMNS = {'delta', 'theta', 'alpha', 'beta', 'gamma'}
 
 class FeatureExtractionError(Exception):
     """Custom exception for feature extraction errors"""
@@ -347,10 +348,26 @@ def extract_features(df: pd.DataFrame, simple_mode: bool = True, overlap: float 
         # Exclude timestamp and state columns
         eeg_channels = [col for col in numerical_cols if col.lower() not in ['timestamp', 'time', 'eeg_state', 'state', 'label']]
         
+        lower_cols = {col.lower() for col in df.columns}
+        has_canonical_feature_columns = CANONICAL_BAND_COLUMNS.issubset(lower_cols)
+        all_scalar_features = True
+        if eeg_channels and not df.empty:
+            sample_row = df[eeg_channels].head(5)
+            for _, row in sample_row.iterrows():
+                for value in row:
+                    if isinstance(value, (np.ndarray, list, tuple)):
+                        all_scalar_features = False
+                        break
+                if not all_scalar_features:
+                    break
+
         # Check if this is raw time-series data or pre-computed features
-        # Raw data: many rows (>50), few columns (channels)
-        # Features: few rows (samples), many columns (features)
-        is_raw_timeseries = len(df) > 50 and len(eeg_channels) < 100
+        # If the dataset already looks like canonical spectral features, keep it as tabular features.
+        is_raw_timeseries = (
+            len(df) > 50
+            and len(eeg_channels) < 100
+            and not (has_canonical_feature_columns and all_scalar_features)
+        )
         
         if is_raw_timeseries:
             logger.info(f"Processing raw time-series data: {len(df)} timepoints, {len(eeg_channels)} channels with overlap {overlap}")
