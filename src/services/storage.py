@@ -130,6 +130,41 @@ class MinioStorageService:
             return None
         return self.download_file(bucket_key, object_name, destination_path)
 
+    def stat_file(self, bucket_key: str, object_name: str) -> Optional[Dict[str, Any]]:
+        """Return object metadata for a stored file."""
+        if not self.enabled or not self.client:
+            return None
+
+        bucket_name = MINIO_CONFIG['buckets'].get(bucket_key)
+        if not bucket_name:
+            logger.error(f"Invalid bucket key: {bucket_key}")
+            return None
+
+        try:
+            stat = self.client.stat_object(bucket_name, object_name)
+            return {
+                "bucket_key": bucket_key,
+                "bucket_name": bucket_name,
+                "object_name": object_name,
+                "etag": getattr(stat, "etag", None),
+                "size": getattr(stat, "size", None),
+                "last_modified": (
+                    stat.last_modified.isoformat()
+                    if getattr(stat, "last_modified", None) is not None
+                    else None
+                ),
+            }
+        except S3Error as e:
+            logger.warning(f"MinIO stat error for {bucket_name}/{object_name}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error statting {bucket_name}/{object_name}: {e}")
+            return None
+
+    def object_exists(self, bucket_key: str, object_name: str) -> bool:
+        """Check whether an object exists in MinIO."""
+        return self.stat_file(bucket_key, object_name) is not None
+
     def build_artifact_descriptor(
         self,
         bucket_key: str,

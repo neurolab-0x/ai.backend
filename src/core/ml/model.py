@@ -377,15 +377,15 @@ def save_model(model, model_path: str) -> None:
         logger.error(f"Error saving model: {str(e)}")
         raise
 
-def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
+def load_calibrated_model(model_path: str, base_dir: str = "model") -> Optional[tf.keras.Model]:
     """Load a trained model from the artifact directory or legacy flat file."""
     try:
         if not TF_AVAILABLE:
             logger.warning("TensorFlow is not installed; calibrated models are unavailable")
             return None
 
-        base_dir = os.path.abspath("model")
-        base_dir_real = os.path.realpath(base_dir)
+        resolved_base_dir = os.path.abspath(base_dir)
+        base_dir_real = os.path.realpath(resolved_base_dir)
 
         # Treat input as a model identifier/basename, never as a full path.
         model_name = os.path.basename(str(model_path))
@@ -395,8 +395,10 @@ def load_calibrated_model(model_path: str) -> Optional[tf.keras.Model]:
             model_name = model_name[:-3]
         model_name = sanitize_model_type(model_name)
 
-        paths = get_model_artifact_paths(model_name)
-        candidate_paths = [paths["model_path"], paths["legacy_model_path"]]
+        paths = get_model_artifact_paths(model_name, base_dir=base_dir)
+        candidate_paths = [paths["model_path"]]
+        if base_dir == "model":
+            candidate_paths.append(paths["legacy_model_path"])
         resolved_model_path = None
         for candidate in candidate_paths:
             candidate_real = os.path.realpath(candidate)

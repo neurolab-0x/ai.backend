@@ -18,6 +18,7 @@ from src.queue import safe_enqueue
 from src.core.ml.model_types import sanitize_model_type
 from src.services.model_manager import get_model_manager
 from src.utils.validation import validate_safe_id
+from src.core.ml.model import get_model_artifact_paths
 
 logger = logging.getLogger(__name__)
 NON_DIAGNOSTIC_DISCLAIMER = (
@@ -210,9 +211,13 @@ class MLProcessor:
             scaler = self.model_manager.get_scaler(model_type)
             metadata = self.model_manager.get_metadata(model_type)
             if scaler is None or metadata is None:
+                paths = get_model_artifact_paths(model_type, base_dir=self.model_manager.model_dir)
                 raise RuntimeError(
                     f"Model artifacts incomplete for model_type={model_type}. "
-                    "Expected model, scaler, and metadata artifacts."
+                    "Expected model, scaler, and metadata artifacts. "
+                    f"Expected paths: model={paths['model_path']}, scaler={paths['scaler_path']}, "
+                    f"metadata={paths['metadata_path']}. Legacy model path alone is insufficient: "
+                    f"{paths['legacy_model_path']}"
                 )
             expected_features = metadata.get("input_features") or ['alpha', 'beta', 'theta', 'delta', 'gamma']
             if not isinstance(expected_features, list) or not expected_features:
