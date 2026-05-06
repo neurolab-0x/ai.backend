@@ -69,6 +69,11 @@ async def process_uploaded_file(
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except RuntimeError as re:
+        detail = str(re)
+        if "Model artifacts incomplete" in detail or "Model unavailable" in detail:
+            raise HTTPException(status_code=503, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
     except HTTPException:
         raise
     except Exception as e:
@@ -100,6 +105,11 @@ async def analyze_eeg_data(
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except RuntimeError as re:
+        detail = str(re)
+        if "Model artifacts incomplete" in detail or "Model unavailable" in detail:
+            raise HTTPException(status_code=503, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
     except HTTPException:
         raise
     except Exception as e:
