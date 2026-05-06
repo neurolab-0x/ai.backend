@@ -28,7 +28,6 @@ from src.preprocessing.labeling import label_eeg_states
 from src.core.ml.model import (
     DEFAULT_FEATURE_NAMES,
     build_model,
-    evaluate_model,
     get_model_artifact_paths,
     save_model_metadata,
     save_scaler_artifact,
