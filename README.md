@@ -1,5 +1,16 @@
 # NeuroLab AI Service
 
+Legacy status: this backend is now maintenance-mode compatibility code.
+
+The active platform for preprocessing, training, and model serving lives in:
+
+- [`../preprocessor`](</home/polo/Documents/Neurolab/AI Service/preprocessor>)
+- [`../training_system`](</home/polo/Documents/Neurolab/AI Service/training_system>)
+- [`../model_platform`](</home/polo/Documents/Neurolab/AI Service/model_platform>)
+- [`../test_frontend`](</home/polo/Documents/Neurolab/AI Service/test_frontend>)
+
+See [`docs/legacy-boundary.md`](</home/polo/Documents/Neurolab/AI Service/backend/docs/legacy-boundary.md>) for the boundary and migration policy.
+
 FastAPI service for EEG analysis, voice analysis, recommendations, chat, model calibration, and optional streaming.
 
 ## What this service does
