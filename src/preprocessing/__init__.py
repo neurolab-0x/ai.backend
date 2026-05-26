@@ -1,6 +1,9 @@
 """
-Preprocessing module for EEG data.
-Consolidated data processing functionality.
+Legacy EEG preprocessing helpers used by the monolithic backend.
+
+The actively developed preprocessing pipeline now lives in the standalone
+`preprocessor` service. This package remains to support backend analysis,
+realtime inference, and legacy training flows that have not been extracted yet.
 """
 
 from .load_data import load_data, load_csv_data, load_edf_data, load_biosignal_data, load_matlab_data
@@ -10,8 +13,8 @@ from .labeling import label_eeg_states
 
 def _missing_preprocess_dependency(*args, **kwargs):
     raise RuntimeError(
-        "Training preprocessing utilities require optional ML dependencies "
-        "such as imbalanced-learn."
+        "Legacy backend training preprocessing utilities require optional ML "
+        "dependencies such as imbalanced-learn."
     )
 
 

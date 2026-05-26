@@ -44,17 +44,18 @@ def load_data(file_path):
 def load_csv_data(file_path):
     """Load data from CSV file format."""
     try:
+        df = None
         # Try different delimiters
         for delimiter in [',', ';', '\t']:
             try:
                 df = pd.read_csv(file_path, delimiter=delimiter)
                 if len(df.columns) > 1:  # Successful parsing
                     break
-            except:
+            except Exception:
                 continue
         
         # Check if successful
-        if len(df.columns) <= 1:
+        if df is None or len(df.columns) <= 1:
             raise ValueError("Could not parse CSV file with standard delimiters")
         
         # Check if column names are numeric and convert them
@@ -65,7 +66,7 @@ def load_csv_data(file_path):
         for col in df.columns:
             try:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-            except:
+            except Exception:
                 # Skip non-numeric columns (like timestamps, labels, etc.)
                 pass
         
@@ -199,7 +200,7 @@ def load_matlab_data(file_path):
                         if len(ch_names) == data.shape[1]:
                             df.columns = ch_names
                             break
-                    except:
+                    except Exception:
                         pass
             
             return df
