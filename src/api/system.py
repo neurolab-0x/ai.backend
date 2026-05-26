@@ -20,6 +20,12 @@ async def health_check():
                 "enabled": SECURITY_CONFIG['require_authentication'],
                 "status": "enabled" if SECURITY_CONFIG['require_authentication'] else "disabled"
             },
+            "service_boundary": {
+                "role": "inference_application",
+                "preprocessing_owner": "preprocessor",
+                "training_owner": "training_system",
+                "model_serving_owner": "model_platform",
+            },
             "diagnostics": {
                 "tensorflow_available": model_manager.tensorflow_available,
                 "models_loaded": health.get("models_loaded", []),
@@ -52,5 +58,11 @@ async def root():
             "Wellness scoring",
             "Detailed reporting with insights",
             "Voice emotion detection and analysis"
-        ]
+        ],
+        "service_boundary": {
+            "role": "inference_application",
+            "preprocessing_owner": "preprocessor",
+            "training_owner": "training_system",
+            "model_serving_owner": "model_platform",
+        },
     }
