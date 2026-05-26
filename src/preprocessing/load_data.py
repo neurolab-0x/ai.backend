@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def load_data(file_path):
     """
-    Load EEG data from various file formats (.csv, .edf, .bdf, .gdf, .mat)
+    Load EEG data from supported backend file formats (.csv, .edf)
     
     Parameters:
     -----------
@@ -30,10 +30,6 @@ def load_data(file_path):
             return load_csv_data(file_path)
         elif extension == '.edf':
             return load_edf_data(file_path)
-        elif extension in ['.bdf', '.gdf']:
-            return load_biosignal_data(file_path)
-        elif extension == '.mat':
-            return load_matlab_data(file_path)
         else:
             raise ValueError(f"Unsupported file format: {extension}")
     except Exception as e:
@@ -119,97 +115,4 @@ def load_edf_data(file_path):
         raise
     except Exception as e:
         logger.error(f"Error loading EDF file: {str(e)}")
-        raise
-
-
-def load_biosignal_data(file_path):
-    """Load data from BDF/GDF file formats."""
-    try:
-        import mne
-        
-        # Load raw data
-        raw = mne.io.read_raw(file_path, preload=True)
-        
-        # Extract data and channel names
-        data = raw.get_data()
-        ch_names = raw.ch_names
-        
-        # Create DataFrame
-        df = pd.DataFrame(data.T, columns=ch_names)
-        
-        # Store metadata
-        df.attrs['sfreq'] = raw.info['sfreq']
-        df.attrs['ch_types'] = [raw.info['chs'][i]['kind'] for i in range(len(ch_names))]
-        
-        return df
-    
-    except ImportError:
-        logger.error("mne not installed. Please install with: pip install mne")
-        raise
-    except Exception as e:
-        logger.error(f"Error loading biosignal file: {str(e)}")
-        raise
-
-
-def load_matlab_data(file_path):
-    """Load data from MATLAB .mat file format."""
-    try:
-        import scipy.io as sio
-        
-        # Load mat file
-        mat_data = sio.loadmat(file_path)
-        
-        # Find main data arrays (usually the largest numeric arrays)
-        data_candidates = {}
-        for key, value in mat_data.items():
-            if isinstance(value, np.ndarray) and value.size > 10 and not key.startswith('__'):
-                data_candidates[key] = value.size
-        
-        # Get key with largest array
-        if data_candidates:
-            main_key = max(data_candidates, key=data_candidates.get)
-            data = mat_data[main_key]
-            
-            # Reshape if needed
-            if data.ndim > 2:
-                # Flatten all but last dimension for multi-dimensional data
-                data = data.reshape(-1, data.shape[-1])
-            
-            # Create column names
-            if data.shape[1] > data.shape[0]:
-                # Transpose if we have more columns than rows 
-                # (assuming channels are usually fewer than timepoints)
-                data = data.T
-            
-            columns = [f"channel_{i}" for i in range(data.shape[1])]
-            
-            # Create DataFrame
-            df = pd.DataFrame(data, columns=columns)
-            
-            # Store metadata
-            if 'srate' in mat_data:
-                df.attrs['sfreq'] = float(mat_data['srate'])
-            elif 'fs' in mat_data:
-                df.attrs['sfreq'] = float(mat_data['fs'])
-                
-            # Look for channel names
-            for key in mat_data:
-                if 'label' in key.lower() or 'channel' in key.lower() or 'ch' in key.lower():
-                    try:
-                        ch_names = [str(x[0]) for x in mat_data[key]]
-                        if len(ch_names) == data.shape[1]:
-                            df.columns = ch_names
-                            break
-                    except Exception:
-                        pass
-            
-            return df
-        else:
-            raise ValueError("No suitable data arrays found in .mat file")
-    
-    except ImportError:
-        logger.error("scipy not installed. Please install with: pip install scipy")
-        raise
-    except Exception as e:
-        logger.error(f"Error loading MATLAB file: {str(e)}")
         raise
