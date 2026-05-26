@@ -2,6 +2,8 @@
 
 Legacy status: this backend is now maintenance-mode compatibility code.
 
+Default role: inference-facing application service.
+
 The active platform for preprocessing, training, and model serving lives in:
 
 - [`../preprocessor`](</home/polo/Documents/Neurolab/AI Service/preprocessor>)
@@ -11,14 +13,13 @@ The active platform for preprocessing, training, and model serving lives in:
 
 See [`docs/legacy-boundary.md`](</home/polo/Documents/Neurolab/AI Service/backend/docs/legacy-boundary.md>) for the boundary and migration policy.
 
-FastAPI service for EEG analysis, voice analysis, recommendations, chat, model calibration, and optional streaming.
+FastAPI service for EEG analysis, voice analysis, recommendations, chat, and optional streaming.
 
 ## What this service does
 - EEG analysis from JSON or uploaded files
 - Voice emotion analysis from uploaded/raw audio
 - Recommendation and non-diagnostic history summary endpoints
 - Chat endpoint with async OpenRouter background mode
-- Model calibration endpoint
 - Optional Redis queue + MongoDB/InfluxDB persistence
 
 ## Tech stack
@@ -70,8 +71,6 @@ Versioned routes:
 - `/api/v1/health`
 - `/api/v1/eeg/*`
 - `/api/v1/voice/*`
-- `/api/v1/models/*`
-- `/api/v1/training/*`
 - `/api/v1/streaming/*` (if available)
 
 Legacy compatibility routes also exist (hidden from OpenAPI), including `/health`, `/upload`, `/analyze`, etc.
@@ -104,9 +103,6 @@ Voice:
 - `POST /api/v1/voice/analyze-batch`
 - `POST /api/v1/voice/analyze-raw`
 - `GET /api/v1/voice/health`
-
-Models:
-- `POST /api/v1/models/calibrate`
 
 ## Important request contract
 For EEG endpoints (`/upload`, `/analyze`), `model_type` is required as a query param.
