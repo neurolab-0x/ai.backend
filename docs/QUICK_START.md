@@ -18,32 +18,19 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-## Generate Training Data
+## Training And Dataset Work
 
-```bash
-# Generate synthetic training data
-python scripts/generate_data.py
+Training data generation and model training no longer live in `backend`.
 
-# Or directly (from project root):
-python src/scripts/generation/generate_train_datasets.py
+Use:
+- [`../../preprocessor`](</home/polo/Documents/Neurolab/AI Service/preprocessor>) for dataset building/publication
+- [`../../training_system`](</home/polo/Documents/Neurolab/AI Service/training_system>) for model training
 
-# Output: data/training_data/training.csv
-```
+The legacy backend quick start below is for inference/application features only.
 
-## Train Model
+## Legacy Notes
 
-```bash
-# Train the model (recommended)
-python scripts/train_model.py
-
-# Or directly (from project root):
-python src/scripts/training/train_model.py
-
-# Outputs:
-# - model/trained_model_improved.h5
-# - checkpoints/
-# - training_results/
-```
+Legacy backend training scripts have been removed.
 
 ## Run API Server
 
@@ -150,8 +137,7 @@ python setup_directories.py
 ### Model Not Found
 ```bash
 # If you see: Model file not found
-# Fix: Train the model first
-python src/scripts/training/train_model.py
+# Fix: produce/promote models through training_system + model_platform first
 ```
 
 ## Documentation
@@ -172,10 +158,8 @@ For issues or questions:
 ## Next Steps
 
 1. ✓ Setup complete
-2. Generate training data
-3. Train model
-4. Start API server
-5. Test endpoints
-6. Integrate with your application
+2. Start API server
+3. Test endpoints
+4. Integrate with your application
 
 Happy coding! 🚀

@@ -1,5 +1,9 @@
 # Running Scripts Guide
 
+Note: backend training/data-generation scripts have been removed. Training and
+dataset generation now belong to the standalone `training_system` and
+`preprocessor` services.
+
 ## Overview
 
 This guide explains how to run scripts in the NeuroLab project correctly, avoiding import errors.
@@ -15,12 +19,6 @@ Python scripts inside the `src/` directory need to import modules using the `src
 We've created wrapper scripts in the `scripts/` directory that handle the path setup automatically:
 
 ```bash
-# Generate training data
-python scripts/generate_data.py
-
-# Train model
-python scripts/train_model.py
-
 # Test voice API
 python scripts/test_voice.py
 ```
@@ -31,11 +29,11 @@ Always run scripts from the project root directory:
 
 ```bash
 # ✓ Correct - from project root
-python src/scripts/training/train_model.py
+python src/scripts/generation/generate_test_audio.py
 
-# ✗ Wrong - from inside src/
-cd src/scripts/training
-python train_model.py  # This will fail!
+# ✗ Wrong - from inside nested src/ directories without project root context
+cd src/scripts/generation
+python generate_test_audio.py  # This may fail!
 ```
 
 ### Solution 3: Set PYTHONPATH
@@ -45,43 +43,24 @@ Set the PYTHONPATH environment variable:
 **Windows (PowerShell):**
 ```powershell
 $env:PYTHONPATH = "C:\Users\pc\Documents\Neurolab\neurolab_model"
-python src/scripts/training/train_model.py
+python src/scripts/generation/generate_test_audio.py
 ```
 
 **Windows (CMD):**
 ```cmd
 set PYTHONPATH=C:\Users\pc\Documents\Neurolab\neurolab_model
-python src/scripts/training/train_model.py
+python src/scripts/generation/generate_test_audio.py
 ```
 
 **Linux/Mac:**
 ```bash
 export PYTHONPATH=/path/to/neurolab_model
-python src/scripts/training/train_model.py
+python src/scripts/generation/generate_test_audio.py
 ```
 
 ## Available Wrapper Scripts
 
-### 1. Generate Training Data
-```bash
-python scripts/generate_data.py
-```
-- Generates synthetic EEG training data
-- Output: `data/training_data/training.csv`
-- Creates 10,000 samples per state (relaxed, focused, stressed)
-
-### 2. Train Model
-```bash
-python scripts/train_model.py
-```
-- Trains the EEG classification model
-- Outputs:
-  - Model: `model/trained_model_improved.h5`
-  - Checkpoints: `checkpoints/`
-  - Results: `training_results/`
-  - Plots: `training_results/plots/`
-
-### 3. Test Voice API
+### 1. Test Voice API
 ```bash
 python scripts/test_voice.py
 ```
@@ -104,10 +83,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 ```
 
-So you can run:
-```bash
-python src/scripts/training/train_model.py
-```
+So you can run supported source-side scripts directly when needed.
 
 ## Common Commands
 
@@ -120,22 +96,10 @@ pip install -r requirements.txt
 python setup_directories.py
 ```
 
-### Data Generation
+### Test Data Generation
 ```bash
-# Generate training data
-python scripts/generate_data.py
-
 # Generate test audio
 python src/scripts/generation/generate_test_audio.py
-```
-
-### Training
-```bash
-# Train model
-python scripts/train_model.py
-
-# Or with custom parameters (edit the script first)
-python src/scripts/training/train_model.py
 ```
 
 ### Testing
@@ -169,11 +133,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 **Cause:** Running script from wrong directory or PYTHONPATH not set
 
 **Solutions:**
-1. Use wrapper scripts: `python scripts/train_model.py`
-2. Run from project root: `python src/scripts/training/train_model.py`
-3. Set PYTHONPATH (see Solution 3 above)
+1. Run supported scripts from the project root
+2. Set PYTHONPATH (see Solution 3 above)
+3. Prefer documented backend scripts only; training scripts were removed
 
-### Error: No such file or directory: 'train_data/...'
+### Error: No such file or directory
 
 **Cause:** Output directories don't exist
 
@@ -184,16 +148,9 @@ python setup_directories.py
 
 ### Error: Model file not found
 
-**Cause:** Model hasn't been trained yet
+**Cause:** backend inference models have not been produced/promoted yet
 
-**Solution:**
-```bash
-# Generate data first
-python scripts/generate_data.py
-
-# Then train model
-python scripts/train_model.py
-```
+**Solution:** train via `training_system`, then promote/sync via `model_platform`
 
 ### Error: Connection refused (testing voice API)
 
@@ -213,13 +170,10 @@ python scripts/test_voice.py
 ```
 neurolab_model/
 ├── scripts/              # Wrapper scripts (use these!)
-│   ├── generate_data.py
-│   ├── train_model.py
 │   └── test_voice.py
 ├── src/
 │   ├── scripts/         # Actual implementation
-│   │   ├── generation/
-│   │   └── training/
+│   │   └── generation/
 │   ├── tests/           # Test files
 │   └── ...
 ├── main.py              # API entry point
