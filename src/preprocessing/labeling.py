@@ -46,6 +46,8 @@ def label_eeg_states(df, method='auto', threshold_params=None):
 
     # Extract only EEG data columns (exclude any existing labels)
     eeg_cols = [col for col in df.columns if col not in {'eeg_state', 'state', 'label'}]
+    if not eeg_cols:
+        raise ValueError("No EEG feature columns available for labeling")
     
     # Default threshold parameters
     default_threshold = {
