@@ -106,10 +106,6 @@ async def retrieve_chat_context(
                 history_lines.append(
                     f"- {time_label}: session {item.get('session_id')} dominant state {item.get('dominant_state')}"
                 )
-            elif item.get("type") == "training":
-                history_lines.append(
-                    f"- {time_label}: training run {item.get('run_id')} accuracy {item.get('accuracy')}, loss {item.get('loss')}"
-                )
         context["health_context"] = "\n".join(history_lines)
     except Exception as exc:
         logger.warning(f"Failed to load historical context for chat: {exc}")

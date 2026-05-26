@@ -12,7 +12,6 @@
   - [EEG Data Processing](#eeg-data-processing)
   - [Real-time Streaming](#real-time-streaming)
   - [External Training And Model Management](#external-training-and-model-management)
-  - [Model Management](#model-management)
 - [Data Models](#data-models)
 - [Rate Limiting](#rate-limiting)
 - [Examples](#examples)
@@ -21,7 +20,7 @@
 
 ## Overview
 
-The NeuroLab EEG Analysis API provides endpoints for processing EEG (Electroencephalogram) data, real-time mental state classification, model training, and user authentication. The API uses RESTful principles and returns JSON responses.
+The NeuroLab EEG Analysis API provides endpoints for processing EEG (Electroencephalogram) data, real-time mental state classification, and user-facing inference workflows. The API uses RESTful principles and returns JSON responses.
 
 **Version:** 1.0.0  
 **API Type:** REST  
@@ -547,25 +546,6 @@ enum MentalState {
 }
 ```
 
-### TrainingConfig
-```typescript
-{
-  model_type: "original" | "enhanced_cnn_lstm" | "resnet_lstm" | "transformer",
-  epochs: number (1-200),
-  batch_size: number (1-256),
-  learning_rate: number (0-1),
-  dropout_rate: number (0-0.9),
-  use_separable: boolean,
-  use_relative_pos: boolean,
-  l1_reg: number (>=0),
-  l2_reg: number (>=0),
-  subject_id?: string,
-  session_id?: string
-}
-```
-
----
-
 ## Rate Limiting
 
 **Default Limits:**
@@ -681,54 +661,6 @@ print(f"  Confidence: {result['confidence']}%")
 print(f"  Recommendations: {result['recommendations']}")
 ```
 
-### Example 4: Model Training (Admin)
-
-```python
-import requests
-import time
-
-BASE_URL = "https://model.neurolab.cc"
-headers = {"Authorization": f"Bearer {admin_token}"}
-
-# Start training
-train_response = requests.post(
-    f"{BASE_URL}/api/train",
-    headers=headers,
-    json={
-        "X_train": training_features,
-        "y_train": training_labels,
-        "X_test": test_features,
-        "y_test": test_labels,
-        "config": {
-            "model_type": "enhanced_cnn_lstm",
-            "epochs": 50,
-            "batch_size": 32
-        }
-    }
-)
-
-job_id = train_response.json()["job_id"]
-
-# Poll for status
-while True:
-    status_response = requests.get(
-        f"{BASE_URL}/api/train/status/{job_id}",
-        headers=headers
-    )
-    status = status_response.json()
-    
-    print(f"Progress: {status['progress']*100:.1f}% - {status['message']}")
-    
-    if status["status"] in ["completed", "failed"]:
-        break
-    
-    time.sleep(5)
-
-# Get final metrics
-if status["status"] == "completed":
-    print(f"Training completed!")
-    print(f"Accuracy: {status['metrics']['final_val_accuracy']:.2%}")
-```
 
 ---
 
