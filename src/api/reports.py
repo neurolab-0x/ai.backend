@@ -55,7 +55,6 @@ class ReportJobRequest(BaseModel):
     end_time: Optional[datetime] = Field(None, description="Optional inclusive UTC end time")
     lookback_days: int = Field(default=30, ge=1, le=365, description="Fallback lookback window if explicit times are not provided")
     include_sessions: bool = Field(default=True)
-    include_training: bool = Field(default=True)
     include_chat: bool = Field(default=True)
     context_limit: int = Field(default=20, ge=1, le=100)
     external_context: Optional[Dict[str, Any]] = Field(

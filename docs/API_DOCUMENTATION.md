@@ -11,8 +11,7 @@
   - [Authentication Endpoints](#authentication-endpoints)
   - [EEG Data Processing](#eeg-data-processing)
   - [Real-time Streaming](#real-time-streaming)
-  - [Model Training](#model-training)
-  - [Model Management](#model-management)
+  - [External Training And Model Management](#external-training-and-model-management)
 - [Data Models](#data-models)
 - [Rate Limiting](#rate-limiting)
 - [Examples](#examples)
@@ -21,7 +20,7 @@
 
 ## Overview
 
-The NeuroLab EEG Analysis API provides endpoints for processing EEG (Electroencephalogram) data, real-time mental state classification, model training, and user authentication. The API uses RESTful principles and returns JSON responses.
+The NeuroLab EEG Analysis API provides endpoints for processing EEG (Electroencephalogram) data, real-time mental state classification, and user-facing inference workflows. The API uses RESTful principles and returns JSON responses.
 
 **Version:** 1.0.0  
 **API Type:** REST  
@@ -463,272 +462,16 @@ Clear client stream buffer.
 
 ---
 
-### Model Training
+### External Training And Model Management
 
-#### POST /api/train
-Train a new model with provided data (Admin only).
+Backend training and backend model-management endpoints have been removed.
 
-**Authentication:** Required (Admin role)
+Use:
+- [`../../training_system`](</home/polo/Documents/Neurolab/AI Service/training_system>) for training runs, status tracking, and model comparison
+- [`../../model_platform`](</home/polo/Documents/Neurolab/AI Service/model_platform>) for promotion, sync, calibration, and serving control
+- [`../../preprocessor`](</home/polo/Documents/Neurolab/AI Service/preprocessor>) for dataset preparation and publication
 
-**Request Body:**
-```json
-{
-  "X_train": [
-    [0.5, 0.3, 0.2, 0.1, 0.4],
-    [0.6, 0.4, 0.3, 0.2, 0.5]
-  ],
-  "y_train": [0, 1],
-  "X_test": [
-    [0.4, 0.2, 0.1, 0.05, 0.3]
-  ],
-  "y_test": [0],
-  "config": {
-    "model_type": "enhanced_cnn_lstm",
-    "epochs": 30,
-    "batch_size": 32,
-    "learning_rate": 0.001,
-    "dropout_rate": 0.3,
-    "use_separable": true,
-    "use_relative_pos": true,
-    "l1_reg": 0.00001,
-    "l2_reg": 0.0001,
-    "subject_id": "subject_001",
-    "session_id": "training_session_001"
-  }
-}
-```
-
-**Model Types:**
-- `original`: Basic CNN-LSTM
-- `enhanced_cnn_lstm`: Enhanced CNN-LSTM with attention
-- `resnet_lstm`: ResNet-style CNN with LSTM
-- `transformer`: Transformer-based architecture
-
-**Response (202):**
-```json
-{
-  "job_id": "train_20251113_103000_admin",
-  "status": "queued",
-  "message": "Training job started in background",
-  "started_at": "2025-11-13T10:30:00Z"
-}
-```
-
----
-
-#### POST /api/train/file
-Train model from uploaded file (Admin only).
-
-**Authentication:** Required (Admin role)
-
-**Request:**
-```
-Content-Type: multipart/form-data
-
-file: <training_data.csv>
-config: {
-  "model_type": "enhanced_cnn_lstm",
-  "epochs": 30,
-  "batch_size": 32
-}
-```
-
-**Response (202):**
-```json
-{
-  "job_id": "train_file_20251113_103000_admin",
-  "status": "queued",
-  "message": "Training job started from file training_data.csv",
-  "started_at": "2025-11-13T10:30:00Z"
-}
-```
-
----
-
-#### GET /api/train/status/{job_id}
-Get training job status.
-
-**Authentication:** Required
-
-**Response (200):**
-```json
-{
-  "job_id": "train_20251113_103000_admin",
-  "status": "training",
-  "progress": 0.65,
-  "message": "Training in progress - Epoch 20/30",
-  "started_at": "2025-11-13T10:30:00Z",
-  "completed_at": null,
-  "metrics": null,
-  "error": null
-}
-```
-
-**Status Values:**
-- `queued`: Job is queued
-- `training`: Training in progress
-- `completed`: Training completed successfully
-- `failed`: Training failed
-
-**Completed Job Response:**
-```json
-{
-  "job_id": "train_20251113_103000_admin",
-  "status": "completed",
-  "progress": 1.0,
-  "message": "Training completed successfully",
-  "started_at": "2025-11-13T10:30:00Z",
-  "completed_at": "2025-11-13T10:45:00Z",
-  "metrics": {
-    "final_train_accuracy": 0.95,
-    "final_val_accuracy": 0.92,
-    "final_train_loss": 0.15,
-    "final_val_loss": 0.22,
-    "test_metrics": {
-      "accuracy": 0.91,
-      "precision": [0.90, 0.92, 0.91],
-      "recall": [0.89, 0.93, 0.90]
-    }
-  },
-  "error": null
-}
-```
-
----
-
-#### GET /api/train/jobs
-List training jobs for current user.
-
-**Authentication:** Required
-
-**Query Parameters:**
-- `limit`: Number of jobs to return (default: 10)
-
-**Response (200):**
-```json
-[
-  {
-    "job_id": "train_20251113_103000_admin",
-    "status": "completed",
-    "progress": 1.0,
-    "message": "Training completed successfully",
-    "started_at": "2025-11-13T10:30:00Z",
-    "completed_at": "2025-11-13T10:45:00Z",
-    "metrics": { ... },
-    "error": null
-  },
-  {
-    "job_id": "train_20251113_090000_admin",
-    "status": "failed",
-    "progress": 0.3,
-    "message": "Training failed",
-    "started_at": "2025-11-13T09:00:00Z",
-    "completed_at": "2025-11-13T09:10:00Z",
-    "metrics": null,
-    "error": "Insufficient training data"
-  }
-]
-```
-
----
-
-#### DELETE /api/train/job/{job_id}
-Delete a training job record (Admin only).
-
-**Authentication:** Required (Admin role)
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "message": "Training job train_20251113_103000_admin deleted"
-}
-```
-
----
-
-#### POST /api/train/compare
-Compare multiple model architectures (Admin only).
-
-**Authentication:** Required (Admin role)
-
-**Request Body:**
-```json
-{
-  "X_train": [[...]],
-  "y_train": [...],
-  "X_test": [[...]],
-  "y_test": [...],
-  "config": {
-    "epochs": 30,
-    "batch_size": 32
-  }
-}
-```
-
-**Query Parameters:**
-- `n_repeats`: Number of training repeats (default: 3)
-
-**Response (202):**
-```json
-{
-  "job_id": "compare_20251113_103000_admin",
-  "status": "queued",
-  "message": "Model comparison started in background",
-  "started_at": "2025-11-13T10:30:00Z"
-}
-```
-
-**Completed Comparison Results:**
-```json
-{
-  "job_id": "compare_20251113_103000_admin",
-  "status": "completed",
-  "metrics": {
-    "original": {
-      "accuracy": [0.85, 0.86, 0.84],
-      "auc": [0.88, 0.89, 0.87],
-      "training_time": [120.5, 118.3, 122.1],
-      "inference_time": [0.015, 0.014, 0.016],
-      "model_size": [2.5, 2.5, 2.5]
-    },
-    "enhanced_cnn_lstm": {
-      "accuracy": [0.92, 0.93, 0.91],
-      "auc": [0.95, 0.96, 0.94],
-      "training_time": [180.2, 175.8, 182.5],
-      "inference_time": [0.025, 0.024, 0.026],
-      "model_size": [5.2, 5.2, 5.2]
-    }
-  }
-}
-```
-
----
-
-### Model Management
-
-#### POST /calibrate
-Calibrate model with new data.
-
-**Authentication:** Optional
-
-**Request Body:**
-```json
-{
-  "calibration_data": {
-    "X": [[...]],
-    "y": [...]
-  }
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "calibration_started",
-  "message": "Calibration process initiated"
-}
-```
+This backend now documents inference-facing application APIs only.
 
 ---
 
@@ -802,25 +545,6 @@ enum MentalState {
   STRESSED = 2      // Stress/anxiety state
 }
 ```
-
-### TrainingConfig
-```typescript
-{
-  model_type: "original" | "enhanced_cnn_lstm" | "resnet_lstm" | "transformer",
-  epochs: number (1-200),
-  batch_size: number (1-256),
-  learning_rate: number (0-1),
-  dropout_rate: number (0-0.9),
-  use_separable: boolean,
-  use_relative_pos: boolean,
-  l1_reg: number (>=0),
-  l2_reg: number (>=0),
-  subject_id?: string,
-  session_id?: string
-}
-```
-
----
 
 ## Rate Limiting
 
@@ -937,54 +661,6 @@ print(f"  Confidence: {result['confidence']}%")
 print(f"  Recommendations: {result['recommendations']}")
 ```
 
-### Example 4: Model Training (Admin)
-
-```python
-import requests
-import time
-
-BASE_URL = "https://model.neurolab.cc"
-headers = {"Authorization": f"Bearer {admin_token}"}
-
-# Start training
-train_response = requests.post(
-    f"{BASE_URL}/api/train",
-    headers=headers,
-    json={
-        "X_train": training_features,
-        "y_train": training_labels,
-        "X_test": test_features,
-        "y_test": test_labels,
-        "config": {
-            "model_type": "enhanced_cnn_lstm",
-            "epochs": 50,
-            "batch_size": 32
-        }
-    }
-)
-
-job_id = train_response.json()["job_id"]
-
-# Poll for status
-while True:
-    status_response = requests.get(
-        f"{BASE_URL}/api/train/status/{job_id}",
-        headers=headers
-    )
-    status = status_response.json()
-    
-    print(f"Progress: {status['progress']*100:.1f}% - {status['message']}")
-    
-    if status["status"] in ["completed", "failed"]:
-        break
-    
-    time.sleep(5)
-
-# Get final metrics
-if status["status"] == "completed":
-    print(f"Training completed!")
-    print(f"Accuracy: {status['metrics']['final_val_accuracy']:.2%}")
-```
 
 ---
 

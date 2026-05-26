@@ -9,12 +9,10 @@ logger = logging.getLogger(__name__)
 from src.utils.validation import validate_safe_id
 
 # Constants
-ALLOWED_EXTENSIONS = {'.edf', '.bdf', '.gdf', '.csv'}
+ALLOWED_EXTENSIONS = {'.edf', '.csv'}
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 ALLOWED_CONTENT_TYPES: Dict[str, Set[str]] = {
     ".edf": {"application/octet-stream", "application/edf", "application/x-edf"},
-    ".bdf": {"application/octet-stream", "application/bdf", "application/x-bdf"},
-    ".gdf": {"application/octet-stream", "application/gdf", "application/x-gdf"},
     ".csv": {"text/csv", "application/csv", "application/vnd.ms-excel"},
 }
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
@@ -53,7 +51,7 @@ def validate_file(file: UploadFile):
     if extension not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            detail=f"Unsupported file type. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
     _validate_content_type(file, extension, ALLOWED_CONTENT_TYPES)
     # UploadFile doesn't reliably expose size across servers; enforce limit while saving.

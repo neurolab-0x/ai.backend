@@ -47,14 +47,12 @@ async def _process_report_request(request: Dict[str, Any], job_id: str) -> Dict[
         end_time=request.get("end_time"),
         lookback_days=int(request.get("lookback_days", 30)),
         include_sessions=bool(request.get("include_sessions", True)),
-        include_training=bool(request.get("include_training", True)),
         include_chat=bool(request.get("include_chat", True)),
         limit=int(request.get("context_limit", 20)),
         external_context=request.get("external_context"),
     )
     context_counts = {
         "sessions": len(context.get("sessions", [])),
-        "training_runs": len(context.get("training_runs", [])),
         "chat_exchanges": len(context.get("chat_exchanges", [])),
         "external_analyses": len(context.get("external_analysis_history", [])),
     }

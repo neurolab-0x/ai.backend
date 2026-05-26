@@ -29,9 +29,9 @@ def _job_exception_handler(job, exc_type, exc_value, _traceback):
 
 
 def configured_queues() -> list[str]:
-    requested = os.getenv("RQ_QUEUES", "default,training,persistence,chat,reports").split(",")
+    requested = os.getenv("RQ_QUEUES", "default,persistence,chat,reports").split(",")
     queues = [q.strip() for q in requested if q.strip()]
-    for required in ("default", "training", "persistence", "chat", "reports"):
+    for required in ("default", "persistence", "chat", "reports"):
         if required not in queues:
             queues.append(required)
     return queues
