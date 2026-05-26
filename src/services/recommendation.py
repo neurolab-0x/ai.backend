@@ -118,8 +118,6 @@ class NLPRecommendationEngine:
             time_str = h['time'].strftime('%Y-%m-%d %H:%M') if isinstance(h['time'], datetime) else str(h['time'])
             if h['type'] == 'session':
                 history_lines.append(f"- {time_str}: Session {h['session_id']} - State: {h['dominant_state']} (EEG/Voice analysis result)")
-            elif h['type'] == 'training':
-                history_lines.append(f"- {time_str}: Training {h['run_id']} - Accuracy: {h['accuracy']:.2f}, Loss: {h['loss']:.2f}")
         
         history_str = "\n".join(history_lines) if history_lines else "No previous history available."
  

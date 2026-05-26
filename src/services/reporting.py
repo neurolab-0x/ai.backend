@@ -39,7 +39,6 @@ async def collect_report_context(
     end_time: Optional[datetime] = None,
     lookback_days: int = 30,
     include_sessions: bool = True,
-    include_training: bool = True,
     include_chat: bool = True,
     limit: int = 20,
     external_context: Optional[Dict[str, Any]] = None,
@@ -53,7 +52,6 @@ async def collect_report_context(
         "end_time": end.isoformat(),
         "lookback_days": lookback_days,
         "sessions": [],
-        "training_runs": [],
         "chat_exchanges": [],
         "external_subject_profile": {},
         "external_analysis_history": [],
@@ -76,14 +74,6 @@ async def collect_report_context(
             limit=limit,
         )
 
-    if include_training:
-        context["training_runs"] = await db_service.get_training_runs_for_subject(
-            subject_id=subject_id,
-            start_time=start,
-            end_time=end,
-            limit=limit,
-        )
-
     if include_chat:
         context["chat_exchanges"] = await db_service.get_chat_exchanges(
             subject_id=subject_id,
@@ -97,7 +87,6 @@ async def collect_report_context(
 
 def build_report_summary(context: Dict[str, Any]) -> Dict[str, Any]:
     sessions = context.get("sessions", [])
-    training_runs = context.get("training_runs", [])
     chat_exchanges = context.get("chat_exchanges", [])
 
     confidence_values = [
@@ -113,7 +102,6 @@ def build_report_summary(context: Dict[str, Any]) -> Dict[str, Any]:
 
     summary = {
         "session_count": len(sessions),
-        "training_run_count": len(training_runs),
         "chat_exchange_count": len(chat_exchanges),
         "external_analysis_count": len(context.get("external_analysis_history", [])),
         "average_session_confidence": (
@@ -134,19 +122,6 @@ def _format_sessions(sessions: List[Dict[str, Any]]) -> str:
         lines.append(
             f"- {ts}: session={item.get('session_id')} state={item.get('dominant_state')} "
             f"confidence={item.get('confidence')} state_percentages={item.get('state_percentages')}"
-        )
-    return "\n".join(lines)
-
-
-def _format_training_runs(training_runs: List[Dict[str, Any]]) -> str:
-    if not training_runs:
-        return "No completed training runs found in the requested time range."
-    lines = []
-    for item in training_runs[:20]:
-        metrics = item.get("metrics") or {}
-        lines.append(
-            f"- {item.get('created_at')}: job_id={item.get('job_id')} model_type={item.get('model_type')} "
-            f"train_accuracy={metrics.get('final_train_accuracy')} val_accuracy={metrics.get('final_val_accuracy')}"
         )
     return "\n".join(lines)
 
@@ -214,8 +189,8 @@ async def generate_report_content(
             "title": f"{report_type.replace('_', ' ').title()} Report",
             "executive_summary": (
                 f"Offline report for subject {subject_id}. "
-                f"Collected {summary['session_count']} sessions, {summary['training_run_count']} training runs, "
-                f"and {summary['chat_exchange_count']} chat exchanges."
+                f"Collected {summary['session_count']} sessions and "
+                f"{summary['chat_exchange_count']} chat exchanges."
             ),
             "key_findings": [
                 f"Dominant state distribution: {summary['dominant_state_counts'] or 'no session data available'}",
@@ -248,9 +223,6 @@ Summary statistics:
 
 Session summaries:
 {_format_sessions(context.get("sessions", []))}
-
-Training runs:
-{_format_training_runs(context.get("training_runs", []))}
 
 Chat exchanges:
 {_format_chat_exchanges(context.get("chat_exchanges", []))}
@@ -304,7 +276,6 @@ def build_report_document(
         "content": content,
         "context_counts": {
             "sessions": len(context.get("sessions", [])),
-            "training_runs": len(context.get("training_runs", [])),
             "chat_exchanges": len(context.get("chat_exchanges", [])),
             "external_analyses": len(context.get("external_analysis_history", [])),
         },

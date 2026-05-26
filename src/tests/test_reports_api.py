@@ -38,7 +38,6 @@ async def test_submit_report_job_enqueues_background_worker(report_setup):
             prompt="Focus on the last 7 days",
             lookback_days=7,
             include_sessions=True,
-            include_training=True,
             include_chat=False,
             context_limit=12,
         )

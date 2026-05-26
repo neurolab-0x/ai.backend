@@ -172,7 +172,7 @@ class DatabaseService:
         return None
             
     async def get_user_history(self, subject_id: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Retrieve historical session summaries for a user from both DBs"""
+        """Retrieve historical session summaries for a user."""
         if not self.enabled:
             return []
         subject_id = validate_safe_id(subject_id, "subject_id")
@@ -193,31 +193,7 @@ class DatabaseService:
                 })
         except Exception as e:
             logger.error(f"Error fetching Mongo history: {e}")
-
-        # 2. Fetch from InfluxDB (Training Events)
-        if self.query_api:
-            try:
-                query = f'from(bucket: "{self.bucket}") \
-                    |> range(start: -90d) \
-                    |> filter(fn: (r) => r["_measurement"] == "training_events") \
-                    |> filter(fn: (r) => r["event_type"] == "COMPLETED") \
-                    |> filter(fn: (r) => r["subject_id"] == "{subject_id}") \
-                    |> limit(n: {limit})'
-                
-                result = self.query_api.query(org=self.org, query=query)
-                for table in result:
-                    for record in table.records:
-                        history.append({
-                            "type": "training",
-                            "time": record.get_time(),
-                            "run_id": record.values.get("run_id"),
-                            "accuracy": record.values.get("final_accuracy"),
-                            "loss": record.values.get("final_loss")
-                        })
-            except Exception as e:
-                logger.error(f"Error fetching InfluxDB history: {e}")
             
-        # Sort combined history by time
         history.sort(key=lambda x: x['time'], reverse=True)
         return history[:limit]
 
@@ -310,42 +286,6 @@ class DatabaseService:
             logger.error(f"Error fetching chat exchanges for {subject_id}: {e}")
             return []
 
-    async def get_training_runs_for_subject(
-        self,
-        *,
-        subject_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        limit: int = 20,
-    ) -> List[Dict[str, Any]]:
-        """Retrieve completed training runs for a user within an optional time window."""
-        if not self.enabled or self.db is None:
-            return []
-
-        try:
-            query: Dict[str, Any] = {
-                "subject_id": validate_safe_id(subject_id, "subject_id"),
-                "status": "completed",
-                "archived": {"$ne": True},
-            }
-            if start_time or end_time:
-                time_query: Dict[str, Any] = {}
-                if start_time:
-                    time_query["$gte"] = start_time
-                if end_time:
-                    time_query["$lte"] = end_time
-                query["created_at"] = time_query
-
-            rows: List[Dict[str, Any]] = []
-            cursor = self.db.training_runs.find(query).sort("created_at", -1).limit(limit)
-            async for doc in cursor:
-                doc["_id"] = str(doc["_id"])
-                rows.append(doc)
-            return rows
-        except Exception as e:
-            logger.error(f"Error fetching training runs for {subject_id}: {e}")
-            return []
-            
     async def store_model_version(self, model_data: Dict[str, Any]) -> str:
         """Store model metadata in MongoDB"""
         if not self.enabled or self.db is None:
@@ -357,105 +297,6 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error storing model version: {e}")
             return "error"
-
-    async def create_training_run(self, run_data: Dict[str, Any]) -> Optional[str]:
-        """Create a persisted training run record in MongoDB."""
-        if not self.enabled or self.db is None:
-            return None
-
-        try:
-            run_data = dict(run_data)
-            run_data["job_id"] = validate_safe_id(run_data["job_id"], "job_id")
-            if "created_at" not in run_data:
-                run_data["created_at"] = datetime.now()
-            if "updated_at" not in run_data:
-                run_data["updated_at"] = run_data["created_at"]
-            run_data.setdefault("archived", False)
-            run_data.setdefault("archived_at", None)
-            result = await self.db.training_runs.insert_one(run_data)
-            return str(result.inserted_id)
-        except Exception as e:
-            logger.error(f"Error creating training run: {e}")
-            return None
-
-    async def update_training_run(self, job_id: str, updates: Dict[str, Any]) -> bool:
-        """Update a persisted training run by job_id."""
-        if not self.enabled or self.db is None:
-            return False
-
-        try:
-            job_id = validate_safe_id(job_id, "job_id")
-            updates = dict(updates)
-            updates["updated_at"] = datetime.now()
-            result = await self.db.training_runs.update_one(
-                {"job_id": job_id},
-                {"$set": updates},
-                upsert=False,
-            )
-            return result.matched_count > 0
-        except Exception as e:
-            logger.error(f"Error updating training run {job_id}: {e}")
-            return False
-
-    async def get_training_run(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a persisted training run by job_id."""
-        if not self.enabled or self.db is None:
-            return None
-
-        try:
-            job_id = validate_safe_id(job_id, "job_id")
-            doc = await self.db.training_runs.find_one({"job_id": job_id})
-            if not doc:
-                return None
-            doc["_id"] = str(doc["_id"])
-            return doc
-        except Exception as e:
-            logger.error(f"Error fetching training run {job_id}: {e}")
-            return None
-
-    async def list_training_runs(self, limit: int = 20, include_archived: bool = False) -> List[Dict[str, Any]]:
-        """List persisted training runs newest first."""
-        if not self.enabled or self.db is None:
-            return []
-
-        runs: List[Dict[str, Any]] = []
-        try:
-            query: Dict[str, Any] = {}
-            if not include_archived:
-                query["archived"] = {"$ne": True}
-            cursor = self.db.training_runs.find(query).sort("created_at", -1).limit(limit)
-            async for doc in cursor:
-                doc["_id"] = str(doc["_id"])
-                runs.append(doc)
-            return runs
-        except Exception as e:
-            logger.error(f"Error listing training runs: {e}")
-            return []
-
-    async def archive_training_run(self, job_id: str, reason: str = "archived_by_user") -> bool:
-        """Archive a persisted training run by job_id."""
-        if not self.enabled or self.db is None:
-            return False
-
-        try:
-            job_id = validate_safe_id(job_id, "job_id")
-            result = await self.db.training_runs.update_one(
-                {"job_id": job_id},
-                {
-                    "$set": {
-                        "archived": True,
-                        "archived_at": datetime.now(),
-                        "archival_reason": reason,
-                        "status": "archived",
-                        "updated_at": datetime.now(),
-                    }
-                },
-                upsert=False,
-            )
-            return result.matched_count > 0
-        except Exception as e:
-            logger.error(f"Error archiving training run {job_id}: {e}")
-            return False
 
     async def create_report_run(self, run_data: Dict[str, Any]) -> Optional[str]:
         """Create a persisted report run record in MongoDB."""
