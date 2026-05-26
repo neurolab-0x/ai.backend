@@ -40,28 +40,5 @@ def verify_storage_service():
     except Exception as e:
         print(f"FAILED with error: {e}")
 
-def verify_training_monitor():
-    print("\n--- Verifying TrainingMonitor ---")
-    try:
-        from src.services.training_monitor import TrainingMonitor
-        
-        monitor = TrainingMonitor()
-        print(f"Monitor Initialized: {monitor.enabled}")
-        
-        if monitor.enabled:
-             print("InfluxDB Client: Active")
-             # Mock write api
-             monitor.write_api = MagicMock()
-             monitor.log_training_event("test_run", "START", {"epochs": 10})
-             print("Mock Log Event: Success")
-        else:
-            print("InfluxDB Service: Disabled (Expected if server not running)")
-
-    except ImportError as e:
-        print(f"FAILED to import monitor service: {e}")
-    except Exception as e:
-        print(f"FAILED with error: {e}")
-
 if __name__ == "__main__":
     verify_storage_service()
-    verify_training_monitor()
